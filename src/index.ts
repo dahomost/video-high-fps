@@ -1,8 +1,8 @@
 import { registerPlugin } from '@capacitor/core';
 
-import type { VideoHighFpsPluginPlugin } from './definitions';
+import type { VideoHighFpsPlugin } from './definitions';
 
-const VideoHighFpsPlugin = registerPlugin<VideoHighFpsPluginPlugin>('VideoHighFpsPlugin', {
+const VideoHighFpsPlugin = registerPlugin<VideoHighFpsPlugin>('VideoHighFpsPlugin', {
   web: () => import('./web').then((m) => new m.VideoHighFpsPluginWeb()),
 });
 

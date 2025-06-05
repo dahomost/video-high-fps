@@ -1,3 +1,4 @@
-export interface VideoHighFpsPluginPlugin {
-  echo(options: { value: string }): Promise<{ value: string }>;
+export interface VideoHighFpsPlugin {
+  startRecording(): Promise<{ path: string }>;
+  stopRecording(): Promise<{ videoPath: string }>;
 }

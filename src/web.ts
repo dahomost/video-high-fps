@@ -1,10 +1,12 @@
 import { WebPlugin } from '@capacitor/core';
+import type { VideoHighFpsPlugin } from './definitions';
 
-import type { VideoHighFpsPluginPlugin } from './definitions';
+export class VideoHighFpsPluginWeb extends WebPlugin implements VideoHighFpsPlugin {
+  async startRecording(): Promise<{ path: string }> {
+    throw this.unimplemented('startRecording is not supported on web.');
+  }
 
-export class VideoHighFpsPluginWeb extends WebPlugin implements VideoHighFpsPluginPlugin {
-  async echo(options: { value: string }): Promise<{ value: string }> {
-    console.log('ECHO', options);
-    return options;
+  async stopRecording(): Promise<{ videoPath: string }> {
+    throw this.unimplemented('stopRecording is not supported on web.');
   }
 }

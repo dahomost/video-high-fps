@@ -1,5 +1,5 @@
 import XCTest
-@testable import VideoHighFpsPluginPlugin
+@testable import VideoHighFpsPlugin
 
 class VideoHighFpsPluginTests: XCTestCase {
     func testEcho() {
