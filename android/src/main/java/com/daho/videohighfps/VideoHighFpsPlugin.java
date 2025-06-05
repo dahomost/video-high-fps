@@ -131,11 +131,11 @@ public class VideoHighFpsPlugin extends Plugin {
     }
 
     @PermissionCallback
-    private void onCameraPermissionResult(PluginCall call, String permission) {
+    private void permissionCallback(PluginCall call, JSObject permissionsResult) {
         if (getPermissionState("camera") == PermissionState.GRANTED) {
-            startRecording(call);
+            call.resolve();
         } else {
-            call.reject("Permission not granted");
+            call.reject("Permission not granted.");
         }
     }
 
