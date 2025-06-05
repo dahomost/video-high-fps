@@ -11,9 +11,35 @@ npx cap sync
 
 ## API
 
-<docgen-index></docgen-index>
+<docgen-index>
+
+* [`startRecording()`](#startrecording)
+* [`stopRecording()`](#stoprecording)
+
+</docgen-index>
 
 <docgen-api>
-<!-- run docgen to generate docs from the source -->
-<!-- More info: https://github.com/ionic-team/capacitor-docgen -->
+<!--Update the source file JSDoc comments and rerun docgen to update the docs below-->
+
+### startRecording()
+
+```typescript
+startRecording() => Promise<{ path: string; }>
+```
+
+**Returns:** <code>Promise&lt;{ path: string; }&gt;</code>
+
+--------------------
+
+
+### stopRecording()
+
+```typescript
+stopRecording() => Promise<{ videoPath: string; }>
+```
+
+**Returns:** <code>Promise&lt;{ videoPath: string; }&gt;</code>
+
+--------------------
+
 </docgen-api>

@@ -1,6 +1,7 @@
 package com.daho.videohighfps;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
 import android.graphics.SurfaceTexture;
@@ -12,10 +13,10 @@ import android.os.HandlerThread;
 import android.util.Log;
 import android.util.Range;
 import android.util.Size;
-import android.view.FrameLayout;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -28,7 +29,6 @@ import com.getcapacitor.annotation.Permission;
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Date;
 import java.util.Locale;
 
@@ -46,7 +46,12 @@ public class VideoHighFpsPlugin extends Plugin {
 
     private TextureView textureView;
     private Surface previewSurface;
-    private Size selectedSize = new Size(1280, 720); // default
+    private Size selectedSize = new Size(1280, 720);
+
+    private int videoDuration = 0;
+    private int videoFrameRate = 30;
+    private int videoSizeLimit = 0;
+    private String videoQuality = "hd";
 
     @PluginMethod
     public void startRecording(PluginCall call) {
@@ -56,8 +61,14 @@ public class VideoHighFpsPlugin extends Plugin {
         }
 
         try {
+            videoDuration = call.getInt("duration", 0);
+            videoFrameRate = call.getInt("frameRate", 30);
+            videoSizeLimit = call.getInt("sizeLimit", 0);
+            videoQuality = call.getString("quality", "hd");
+
             Context context = getContext();
             cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
+
             HandlerThread handlerThread = new HandlerThread("CameraBackground");
             handlerThread.start();
             backgroundHandler = new Handler(handlerThread.getLooper());
@@ -75,7 +86,7 @@ public class VideoHighFpsPlugin extends Plugin {
                 public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
                     previewSurface = new Surface(surface);
                     try {
-                        selectBestSizeFor120FPS(); // find the highest supported resolution
+                        selectResolutionBasedOnQuality();
                         openCamera(call);
                     } catch (Exception e) {
                         call.reject("Failed selecting camera size: " + e.getMessage());
@@ -101,29 +112,36 @@ public class VideoHighFpsPlugin extends Plugin {
         }
     }
 
-    private void selectBestSizeFor120FPS() throws CameraAccessException {
+    private void selectResolutionBasedOnQuality() throws CameraAccessException {
         String cameraId = cameraManager.getCameraIdList()[0];
         CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
         StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
         Size[] supportedSizes = map.getOutputSizes(MediaRecorder.class);
-        Range<Integer>[] fpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
 
-        // Log all sizes and FPS ranges
-        for (Size size : supportedSizes) {
-            Log.d("VideoSize", size.toString());
-        }
-        for (Range<Integer> fps : fpsRanges) {
-            Log.d("FPSRange", "Available: " + fps);
-        }
-
-        for (Size size : supportedSizes) {
-            if (size.getWidth() >= 1920 && size.getHeight() >= 1080) {
-                selectedSize = size;
+        switch (videoQuality) {
+            case "uhd":
+                selectedSize = findMatchingSize(supportedSizes, 3840, 2160);
                 break;
-            }
+            case "fhd":
+                selectedSize = findMatchingSize(supportedSizes, 1920, 1080);
+                break;
+            case "hd":
+            default:
+                selectedSize = findMatchingSize(supportedSizes, 1280, 720);
+                break;
         }
     }
 
+    private Size findMatchingSize(Size[] sizes, int width, int height) {
+        for (Size s : sizes) {
+            if (s.getWidth() >= width && s.getHeight() >= height) {
+                return s;
+            }
+        }
+        return sizes[0];
+    }
+
+    @SuppressLint("MissingPermission")
     private void openCamera(PluginCall call) {
         try {
             String cameraId = cameraManager.getCameraIdList()[0];
@@ -171,7 +189,8 @@ public class VideoHighFpsPlugin extends Plugin {
                             builder.addTarget(previewSurface);
                             builder.addTarget(recorderSurface);
                             builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-                            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(120, 120));
+                            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                                    new Range<>(videoFrameRate, videoFrameRate));
 
                             session.setRepeatingRequest(builder.build(), null, backgroundHandler);
                             mediaRecorder.start();
@@ -202,11 +221,20 @@ public class VideoHighFpsPlugin extends Plugin {
         mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
         mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
         mediaRecorder.setOutputFile(videoPath);
-        mediaRecorder.setVideoFrameRate(120);
+        mediaRecorder.setVideoFrameRate(videoFrameRate);
         mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
         mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
         mediaRecorder.setVideoEncodingBitRate(15_000_000);
         mediaRecorder.setVideoSize(selectedSize.getWidth(), selectedSize.getHeight());
+
+        if (videoDuration > 0) {
+            mediaRecorder.setMaxDuration(videoDuration * 1000);
+        }
+
+        if (videoSizeLimit > 0) {
+            mediaRecorder.setMaxFileSize(videoSizeLimit);
+        }
+
         mediaRecorder.prepare();
     }
 
@@ -226,7 +254,7 @@ public class VideoHighFpsPlugin extends Plugin {
                 cameraDevice.close();
                 cameraDevice = null;
             }
-            if (textureView != null) {
+            if (textureView != null && textureView.getParent() != null) {
                 ((ViewGroup) textureView.getParent()).removeView(textureView);
                 textureView = null;
             }
