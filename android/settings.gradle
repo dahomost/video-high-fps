@@ -1,2 +1,5 @@
+// Include Capacitor Android core module
 include ':capacitor-android'
+
+// Link to Capacitor Android source from node_modules
 project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/android/capacitor')
