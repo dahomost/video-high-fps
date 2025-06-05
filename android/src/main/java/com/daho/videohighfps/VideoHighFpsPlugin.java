@@ -89,8 +89,7 @@ public class VideoHighFpsPlugin extends Plugin {
         textureView = new TextureView(activity);
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-        );
+                FrameLayout.LayoutParams.MATCH_PARENT);
 
         activity.runOnUiThread(() -> {
             FrameLayout root = activity.findViewById(android.R.id.content);
@@ -119,9 +118,15 @@ public class VideoHighFpsPlugin extends Plugin {
                 }
             }
 
-            public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {}
-            public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) { return true; }
-            public void onSurfaceTextureUpdated(SurfaceTexture surface) {}
+            public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
+            }
+
+            public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+                return true;
+            }
+
+            public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+            }
         });
     }
 
@@ -140,15 +145,22 @@ public class VideoHighFpsPlugin extends Plugin {
         Size[] supportedSizes = map.getOutputSizes(MediaRecorder.class);
 
         switch (videoQuality) {
-            case "uhd": selectedSize = findMatchingSize(supportedSizes, 3840, 2160); break;
-            case "fhd": selectedSize = findMatchingSize(supportedSizes, 1920, 1080); break;
-            default: selectedSize = findMatchingSize(supportedSizes, 1280, 720); break;
+            case "uhd":
+                selectedSize = findMatchingSize(supportedSizes, 3840, 2160);
+                break;
+            case "fhd":
+                selectedSize = findMatchingSize(supportedSizes, 1920, 1080);
+                break;
+            default:
+                selectedSize = findMatchingSize(supportedSizes, 1280, 720);
+                break;
         }
     }
 
     private Size findMatchingSize(Size[] sizes, int width, int height) {
         for (Size s : sizes) {
-            if (s.getWidth() >= width && s.getHeight() >= height) return s;
+            if (s.getWidth() >= width && s.getHeight() >= height)
+                return s;
         }
         return sizes[0];
     }
@@ -178,8 +190,15 @@ public class VideoHighFpsPlugin extends Plugin {
                     }
                 }
 
-                public void onDisconnected(CameraDevice camera) { camera.close(); cameraDevice = null; }
-                public void onError(CameraDevice camera, int error) { camera.close(); cameraDevice = null; }
+                public void onDisconnected(CameraDevice camera) {
+                    camera.close();
+                    cameraDevice = null;
+                }
+
+                public void onError(CameraDevice camera, int error) {
+                    camera.close();
+                    cameraDevice = null;
+                }
             }, backgroundHandler);
         } catch (Exception e) {
             call.reject("Camera open failed: " + e.getMessage());
@@ -196,11 +215,13 @@ public class VideoHighFpsPlugin extends Plugin {
                     public void onConfigured(CameraCaptureSession session) {
                         captureSession = session;
                         try {
-                            CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+                            CaptureRequest.Builder builder = cameraDevice
+                                    .createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
                             builder.addTarget(previewSurface);
                             builder.addTarget(recorderSurface);
                             builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-                            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(videoFrameRate, videoFrameRate));
+                            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                                    new Range<>(videoFrameRate, videoFrameRate));
                             session.setRepeatingRequest(builder.build(), null, backgroundHandler);
                             mediaRecorder.start();
                         } catch (Exception e) {
@@ -211,8 +232,7 @@ public class VideoHighFpsPlugin extends Plugin {
                     public void onConfigureFailed(CameraCaptureSession session) {
                         call.reject("Camera configuration failed");
                     }
-                }, backgroundHandler
-        );
+                }, backgroundHandler);
     }
 
     private int safeGetInt(PluginCall call, String key, int defaultValue) {
@@ -236,8 +256,10 @@ public class VideoHighFpsPlugin extends Plugin {
         mediaRecorder.setVideoEncodingBitRate(15_000_000);
         mediaRecorder.setVideoSize(selectedSize.getWidth(), selectedSize.getHeight());
 
-        if (videoDuration > 0) mediaRecorder.setMaxDuration(videoDuration * 1000);
-        if (videoSizeLimit > 0) mediaRecorder.setMaxFileSize(videoSizeLimit);
+        if (videoDuration > 0)
+            mediaRecorder.setMaxDuration(videoDuration * 1000);
+        if (videoSizeLimit > 0)
+            mediaRecorder.setMaxFileSize(videoSizeLimit);
 
         mediaRecorder.prepare();
     }
