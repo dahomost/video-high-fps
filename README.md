@@ -13,8 +13,7 @@ npx cap sync
 
 <docgen-index>
 
-* [`startRecording(...)`](#startrecording)
-* [`stopRecording()`](#stoprecording)
+* [`openCamera(...)`](#opencamera)
 * [Interfaces](#interfaces)
 
 </docgen-index>
@@ -22,10 +21,10 @@ npx cap sync
 <docgen-api>
 <!--Update the source file JSDoc comments and rerun docgen to update the docs below-->
 
-### startRecording(...)
+### openCamera(...)
 
 ```typescript
-startRecording(options: CaptureVideoOptions) => Promise<MediaFileResult>
+openCamera(options: CaptureVideoOptions) => Promise<MediaFileResult>
 ```
 
 | Param         | Type                                                                |
@@ -37,34 +36,23 @@ startRecording(options: CaptureVideoOptions) => Promise<MediaFileResult>
 --------------------
 
 
-### stopRecording()
-
-```typescript
-stopRecording() => Promise<{ videoPath: string; }>
-```
-
-**Returns:** <code>Promise&lt;{ videoPath: string; }&gt;</code>
-
---------------------
-
-
 ### Interfaces
 
 
 #### MediaFileResult
 
-| Prop       | Type                           |
-| ---------- | ------------------------------ |
-| **`file`** | <code>{ path: string; }</code> |
+| Prop            | Type                | Description                                    |
+| --------------- | ------------------- | ---------------------------------------------- |
+| **`videoPath`** | <code>string</code> | Absolute local file path of the recorded video |
 
 
 #### CaptureVideoOptions
 
-| Prop            | Type                                |
-| --------------- | ----------------------------------- |
-| **`duration`**  | <code>number</code>                 |
-| **`quality`**   | <code>'hd' \| 'fhd' \| 'uhd'</code> |
-| **`frameRate`** | <code>number</code>                 |
-| **`sizeLimit`** | <code>number</code>                 |
+| Prop            | Type                                | Description                                                                    |
+| --------------- | ----------------------------------- | ------------------------------------------------------------------------------ |
+| **`duration`**  | <code>number</code>                 | Maximum duration in seconds (0 = unlimited)                                    |
+| **`frameRate`** | <code>number</code>                 | Desired frame rate, e.g., 30, 60, 120                                          |
+| **`sizeLimit`** | <code>number</code>                 | Max file size in bytes (e.g., 50_000_000 for 50MB)                             |
+| **`quality`**   | <code>'hd' \| 'fhd' \| 'uhd'</code> | Video quality preset - 'hd' = 1280x720 - 'fhd' = 1920x1080 - 'uhd' = 3840x2160 |
 
 </docgen-api>

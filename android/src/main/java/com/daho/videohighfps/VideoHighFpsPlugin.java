@@ -15,10 +15,12 @@ import android.os.HandlerThread;
 import android.util.Log;
 import android.util.Range;
 import android.util.Size;
+import android.view.Display;
 import android.view.Gravity;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
 
@@ -161,12 +163,13 @@ public class VideoHighFpsPlugin extends Plugin {
                     isRecording = true;
                     recordButton.setText("⏹ Stop");
                 } else {
+                    isRecording = false;
+                    recordButton.setEnabled(false);
                     stopNativeRecording();
-                    parent.removeView(recordButton);
-                    Log.d("VideoHighFps", "✅-=====> remove View");
                 }
             } catch (Exception e) {
                 Log.e("VideoHighFpsPlugin", "Recording toggle failed: " + e.getMessage());
+                storedCall.reject("Recording error: " + e.getMessage());
             }
         });
 
@@ -320,8 +323,31 @@ public class VideoHighFpsPlugin extends Plugin {
         return (value != null) ? value : defaultValue;
     }
 
-    private void setupMediaRecorder() throws Exception {
+    private int getOrientationHint() throws CameraAccessException {
+        CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
+        int sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
 
+        int rotation = getActivity().getWindowManager().getDefaultDisplay().getRotation();
+        int degrees = 0;
+        switch (rotation) {
+            case Surface.ROTATION_0:
+                degrees = 0;
+                break;
+            case Surface.ROTATION_90:
+                degrees = 90;
+                break;
+            case Surface.ROTATION_180:
+                degrees = 180;
+                break;
+            case Surface.ROTATION_270:
+                degrees = 270;
+                break;
+        }
+
+        return (sensorOrientation - degrees + 360) % 360;
+    }
+
+    private void setupMediaRecorder() throws Exception {
         File outputDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES);
 
         String fileName = "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".mp4";
@@ -338,6 +364,7 @@ public class VideoHighFpsPlugin extends Plugin {
         mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
         mediaRecorder.setVideoEncodingBitRate(15_000_000);
         mediaRecorder.setVideoSize(selectedSize.getWidth(), selectedSize.getHeight());
+        mediaRecorder.setOrientationHint(getOrientationHint());
 
         if (videoDuration > 0)
             mediaRecorder.setMaxDuration(videoDuration * 1000);
