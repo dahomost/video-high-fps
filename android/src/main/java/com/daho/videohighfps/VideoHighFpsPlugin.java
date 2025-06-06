@@ -15,9 +15,11 @@ import android.os.HandlerThread;
 import android.util.Log;
 import android.util.Range;
 import android.util.Size;
+import android.view.Gravity;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.FrameLayout;
 
 import com.getcapacitor.JSObject;
@@ -34,12 +36,12 @@ import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
+import android.media.MediaScannerConnection;
 
 @CapacitorPlugin(name = "VideoHighFps", permissions = {
         @Permission(strings = { Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO }, alias = "camera")
 })
 public class VideoHighFpsPlugin extends Plugin {
-
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
     private MediaRecorder mediaRecorder;
@@ -50,22 +52,26 @@ public class VideoHighFpsPlugin extends Plugin {
     private TextureView textureView;
     private Surface previewSurface;
     private Size selectedSize = new Size(1280, 720);
-    private String selectedCameraId = null; // ✅ hold valid cameraId
+    private String selectedCameraId = null;
 
     private int videoDuration = 0;
     private int videoFrameRate = 30;
     private int videoSizeLimit = 0;
     private String videoQuality = "hd";
+    private boolean isRecording = false;
+    private PluginCall storedCall;
 
     @PluginMethod
-    public void startRecording(PluginCall call) {
-        Log.d("VideoHighFpsPlugin", "startRecording() invoked");
-
+    public void openCamera(PluginCall call) {
         if (getPermissionState("camera") != PermissionState.GRANTED) {
             requestPermissionForAlias("camera", call, "onCameraPermissionResult");
+            Log.d("VideoHighFps", "❌-=====> open camera, permission denied");
             return;
         }
 
+        Log.d("VideoHighFps", "✅-=====> open camera, permission grated");
+
+        storedCall = call;
         videoDuration = safeGetInt(call, "duration", 0);
         videoFrameRate = safeGetInt(call, "frameRate", 30);
         videoSizeLimit = safeGetInt(call, "sizeLimit", 0);
@@ -79,7 +85,7 @@ public class VideoHighFpsPlugin extends Plugin {
         backgroundHandler = new Handler(handlerThread.getLooper());
 
         try {
-            selectedCameraId = getBackCameraId(); // ✅ select valid back-facing camera
+            selectedCameraId = getBackCameraId();
         } catch (Exception e) {
             call.reject("No valid back-facing camera found: " + e.getMessage());
             return;
@@ -98,7 +104,11 @@ public class VideoHighFpsPlugin extends Plugin {
 
             textureView.setLayoutParams(params);
             backgroundLayer.addView(textureView);
-            root.addView(backgroundLayer, 0);
+
+            Log.d("VideoHighFps", "✅ 1 -=====> addControlButton");
+            root.addView(backgroundLayer);
+            backgroundLayer.post(() -> addControlButton(backgroundLayer));
+            Log.d("VideoHighFps", "✅ 4 -=====> addControlButton");
         });
 
         textureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
@@ -111,7 +121,7 @@ public class VideoHighFpsPlugin extends Plugin {
                     previewSurface = new Surface(surface);
                     try {
                         selectResolutionBasedOnQuality();
-                        openCamera(call);
+                        openNativeCamera();
                     } catch (Exception e) {
                         call.reject("Failed selecting camera size: " + e.getMessage());
                     }
@@ -130,11 +140,47 @@ public class VideoHighFpsPlugin extends Plugin {
         });
     }
 
+    private void addControlButton(FrameLayout parent) {
+        Activity activity = getActivity();
+        Button recordButton = new Button(activity);
+        recordButton.setText("▶ Start");
+
+        Log.d("VideoHighFps", "✅ 2 -=====> addControlButton");
+
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        lp.setMargins(0, 0, 0, 120);
+        recordButton.setLayoutParams(lp);
+
+        recordButton.setOnClickListener(v -> {
+            try {
+                if (!isRecording) {
+                    mediaRecorder.start();
+                    isRecording = true;
+                    recordButton.setText("⏹ Stop");
+                } else {
+                    stopNativeRecording();
+                    parent.removeView(recordButton);
+                    Log.d("VideoHighFps", "✅-=====> remove View");
+                }
+            } catch (Exception e) {
+                Log.e("VideoHighFpsPlugin", "Recording toggle failed: " + e.getMessage());
+            }
+        });
+
+        parent.addView(recordButton);
+        Log.d("VideoHighFps", "✅ 3 -=====>3 addControlButton");
+    }
+
     @PermissionCallback
-    private void permissionCallback(PluginCall call, JSObject permissionsResult) {
+    private void onCameraPermissionResult(PluginCall call) {
         if (getPermissionState("camera") == PermissionState.GRANTED) {
-            call.resolve();
+            Log.d("VideoHighFps", "✅-=====> permission granted");
+            openCamera(call);
         } else {
+            Log.d("VideoHighFps", "❌-=====> permission not granted");
             call.reject("Permission not granted.");
         }
     }
@@ -158,35 +204,32 @@ public class VideoHighFpsPlugin extends Plugin {
     }
 
     private Size findMatchingSize(Size[] sizes, int width, int height) {
-        for (Size s : sizes) {
+        for (Size s : sizes)
             if (s.getWidth() >= width && s.getHeight() >= height)
                 return s;
-        }
         return sizes[0];
     }
 
-    // ✅ Picks the first back-facing camera
     private String getBackCameraId() throws CameraAccessException {
         for (String cameraId : cameraManager.getCameraIdList()) {
-            CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
-            Integer lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING);
-            if (lensFacing != null && lensFacing == CameraCharacteristics.LENS_FACING_BACK) {
+            CameraCharacteristics c = cameraManager.getCameraCharacteristics(cameraId);
+            Integer facing = c.get(CameraCharacteristics.LENS_FACING);
+            if (facing != null && facing == CameraCharacteristics.LENS_FACING_BACK)
                 return cameraId;
-            }
         }
         throw new CameraAccessException(CameraAccessException.CAMERA_ERROR, "Back-facing camera not found");
     }
 
     @SuppressLint("MissingPermission")
-    private void openCamera(PluginCall call) {
+    private void openNativeCamera() {
         try {
             cameraManager.openCamera(selectedCameraId, new CameraDevice.StateCallback() {
                 public void onOpened(CameraDevice camera) {
                     cameraDevice = camera;
                     try {
-                        startCaptureSession(call);
+                        startCaptureSession();
                     } catch (Exception e) {
-                        call.reject("Capture session failed: " + e.getMessage());
+                        storedCall.reject("Capture session failed: " + e.getMessage());
                     }
                 }
 
@@ -201,16 +244,15 @@ public class VideoHighFpsPlugin extends Plugin {
                 }
             }, backgroundHandler);
         } catch (Exception e) {
-            call.reject("Camera open failed: " + e.getMessage());
+            storedCall.reject("Camera open failed: " + e.getMessage());
         }
     }
 
-    private void startCaptureSession(PluginCall call) throws Exception {
+    private void startCaptureSession() throws Exception {
         setupMediaRecorder();
         Surface recorderSurface = mediaRecorder.getSurface();
 
-        cameraDevice.createCaptureSession(
-                Arrays.asList(previewSurface, recorderSurface),
+        cameraDevice.createCaptureSession(Arrays.asList(previewSurface, recorderSurface),
                 new CameraCaptureSession.StateCallback() {
                     public void onConfigured(CameraCaptureSession session) {
                         captureSession = session;
@@ -223,16 +265,54 @@ public class VideoHighFpsPlugin extends Plugin {
                             builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                                     new Range<>(videoFrameRate, videoFrameRate));
                             session.setRepeatingRequest(builder.build(), null, backgroundHandler);
-                            mediaRecorder.start();
                         } catch (Exception e) {
-                            call.reject("Failed to start recording: " + e.getMessage());
+                            storedCall.reject("Failed to start preview: " + e.getMessage());
                         }
                     }
 
                     public void onConfigureFailed(CameraCaptureSession session) {
-                        call.reject("Camera configuration failed");
+                        storedCall.reject("Camera configuration failed");
                     }
                 }, backgroundHandler);
+    }
+
+    private void stopNativeRecording() {
+        try {
+            if (mediaRecorder != null) {
+                mediaRecorder.stop();
+                mediaRecorder.release();
+                mediaRecorder = null;
+            }
+
+            if (captureSession != null)
+                captureSession.close();
+            if (cameraDevice != null)
+                cameraDevice.close();
+
+            if (textureView != null && textureView.getParent() instanceof ViewGroup) {
+                ViewGroup parent = (ViewGroup) textureView.getParent();
+                ViewGroup root = (ViewGroup) parent.getParent();
+                if (root != null) {
+                    root.removeView(parent); // removes full overlay frame
+                }
+            }
+
+            // ✅ Scan the saved video to make it visible in the Gallery
+            if (videoPath != null) {
+                MediaScannerConnection.scanFile(getContext(),
+                        new String[] { videoPath },
+                        new String[] { "video/mp4" },
+                        null);
+            }
+
+            // ✅ Send result back to Capacitor
+            JSObject ret = new JSObject();
+            ret.put("videoPath", videoPath);
+            storedCall.resolve(ret);
+
+        } catch (Exception e) {
+            storedCall.reject("Error stopping recording: " + e.getMessage());
+        }
     }
 
     private int safeGetInt(PluginCall call, String key, int defaultValue) {
@@ -241,9 +321,12 @@ public class VideoHighFpsPlugin extends Plugin {
     }
 
     private void setupMediaRecorder() throws Exception {
-        File outputDir = getContext().getExternalFilesDir(Environment.DIRECTORY_MOVIES);
+
+        File outputDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES);
+
         String fileName = "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".mp4";
         videoPath = new File(outputDir, fileName).getAbsolutePath();
+        Log.d("VideoHighFps -=>", "✅ Saved videoPath: " + videoPath);
 
         mediaRecorder = new MediaRecorder();
         mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
@@ -262,42 +345,6 @@ public class VideoHighFpsPlugin extends Plugin {
             mediaRecorder.setMaxFileSize(videoSizeLimit);
 
         mediaRecorder.prepare();
-    }
-
-    @PluginMethod
-    public void stopRecording(PluginCall call) {
-        try {
-            if (mediaRecorder != null) {
-                try {
-                    mediaRecorder.stop();
-                } catch (RuntimeException e) {
-                    File file = new File(videoPath);
-                    if (!file.delete()) {
-                        Log.w("VideoHighFpsPlugin", "Failed to delete corrupted video file: " + videoPath);
-                    }
-                    throw e;
-                }
-                mediaRecorder.release();
-                mediaRecorder = null;
-            }
-            if (captureSession != null) {
-                captureSession.close();
-                captureSession = null;
-            }
-            if (cameraDevice != null) {
-                cameraDevice.close();
-                cameraDevice = null;
-            }
-            if (textureView != null && textureView.getParent() != null) {
-                ((ViewGroup) textureView.getParent()).removeView(textureView);
-                textureView = null;
-            }
-
-            JSObject ret = new JSObject();
-            ret.put("videoPath", videoPath);
-            call.resolve(ret);
-        } catch (Exception e) {
-            call.reject("Error stopping recording: " + e.getMessage());
-        }
+        Thread.sleep(500); // Add this line
     }
 }
