@@ -1,13 +1,9 @@
-// ✅ your package declaration remains the same
 package com.daho.videohighfps;
 
 import android.Manifest;
-import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
-import android.graphics.SurfaceTexture;
 import android.hardware.camera2.*;
-import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.MediaRecorder;
 import android.os.Environment;
 import android.os.Handler;
@@ -15,12 +11,9 @@ import android.os.HandlerThread;
 import android.util.Log;
 import android.util.Range;
 import android.util.Size;
-import android.view.Display;
 import android.view.Gravity;
 import android.view.Surface;
-import android.view.TextureView;
 import android.view.ViewGroup;
-import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
 
@@ -38,7 +31,7 @@ import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
-import android.media.MediaScannerConnection;
+import android.annotation.SuppressLint;
 
 @CapacitorPlugin(name = "VideoHighFps", permissions = {
         @Permission(strings = { Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO }, alias = "camera")
@@ -51,15 +44,12 @@ public class VideoHighFpsPlugin extends Plugin {
     private CameraManager cameraManager;
     private Handler backgroundHandler;
 
-    private TextureView textureView;
-    private Surface previewSurface;
     private Size selectedSize = new Size(1280, 720);
     private String selectedCameraId = null;
 
     private int videoDuration = 0;
-    private int videoFrameRate = 30;
+    private int videoFrameRate = 120;
     private int videoSizeLimit = 0;
-    private String videoQuality = "hd";
     private boolean isRecording = false;
     private PluginCall storedCall;
 
@@ -67,17 +57,13 @@ public class VideoHighFpsPlugin extends Plugin {
     public void openCamera(PluginCall call) {
         if (getPermissionState("camera") != PermissionState.GRANTED) {
             requestPermissionForAlias("camera", call, "onCameraPermissionResult");
-            Log.d("VideoHighFps", "❌-=====> open camera, permission denied");
             return;
         }
 
-        Log.d("VideoHighFps", "✅-=====> open camera, permission grated");
-
         storedCall = call;
-        videoDuration = safeGetInt(call, "duration", 0);
-        videoFrameRate = safeGetInt(call, "frameRate", 30);
-        videoSizeLimit = safeGetInt(call, "sizeLimit", 0);
-        videoQuality = call.getString("quality", "hd");
+        videoDuration = call.getInt("duration", 0);
+        videoFrameRate = call.getInt("frameRate", 120);
+        videoSizeLimit = call.getInt("sizeLimit", 0);
 
         Context context = getContext();
         cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
@@ -88,66 +74,60 @@ public class VideoHighFpsPlugin extends Plugin {
 
         try {
             selectedCameraId = getBackCameraId();
+            openNativeCamera();
         } catch (Exception e) {
-            call.reject("No valid back-facing camera found: " + e.getMessage());
-            return;
+            call.reject("Camera error: " + e.getMessage());
         }
+    }
 
-        Activity activity = getActivity();
-        textureView = new TextureView(activity);
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT);
+    private String getBackCameraId() throws CameraAccessException {
+        for (String cameraId : cameraManager.getCameraIdList()) {
+            CameraCharacteristics c = cameraManager.getCameraCharacteristics(cameraId);
+            if (c.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK) {
+                return cameraId;
+            }
+        }
+        throw new CameraAccessException(CameraAccessException.CAMERA_ERROR, "No back camera found");
+    }
 
-        activity.runOnUiThread(() -> {
-            FrameLayout root = activity.findViewById(android.R.id.content);
-            FrameLayout backgroundLayer = new FrameLayout(activity);
-            backgroundLayer.setLayoutParams(params);
+    @PermissionCallback
+    private void onCameraPermissionResult(PluginCall call) {
+        if (getPermissionState("camera") == PermissionState.GRANTED) {
+            openCamera(call);
+        } else {
+            call.reject("Permission denied");
+        }
+    }
 
-            textureView.setLayoutParams(params);
-            backgroundLayer.addView(textureView);
-
-            Log.d("VideoHighFps", "✅ 1 -=====> addControlButton");
-            root.addView(backgroundLayer);
-            backgroundLayer.post(() -> addControlButton(backgroundLayer));
-            Log.d("VideoHighFps", "✅ 4 -=====> addControlButton");
-        });
-
-        textureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
-            boolean isReady = false;
-
-            @Override
-            public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
-                if (!isReady) {
-                    isReady = true;
-                    previewSurface = new Surface(surface);
-                    try {
-                        selectResolutionBasedOnQuality();
-                        openNativeCamera();
-                    } catch (Exception e) {
-                        call.reject("Failed selecting camera size: " + e.getMessage());
-                    }
+    @SuppressLint("MissingPermission")
+    private void openNativeCamera() throws CameraAccessException {
+        cameraManager.openCamera(selectedCameraId, new CameraDevice.StateCallback() {
+            public void onOpened(CameraDevice camera) {
+                cameraDevice = camera;
+                try {
+                    setupMediaRecorder();
+                    startCaptureSession();
+                } catch (Exception e) {
+                    storedCall.reject("Camera session error: " + e.getMessage());
                 }
             }
 
-            public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
+            public void onDisconnected(CameraDevice camera) {
+                camera.close();
             }
 
-            public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
-                return true;
+            public void onError(CameraDevice camera, int error) {
+                camera.close();
             }
+        }, backgroundHandler);
 
-            public void onSurfaceTextureUpdated(SurfaceTexture surface) {
-            }
-        });
+        showControlButton();
     }
 
-    private void addControlButton(FrameLayout parent) {
+    private void showControlButton() {
         Activity activity = getActivity();
         Button recordButton = new Button(activity);
         recordButton.setText("▶ Start");
-
-        Log.d("VideoHighFps", "✅ 2 -=====> addControlButton");
 
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -168,115 +148,69 @@ public class VideoHighFpsPlugin extends Plugin {
                     stopNativeRecording();
                 }
             } catch (Exception e) {
-                Log.e("VideoHighFpsPlugin", "Recording toggle failed: " + e.getMessage());
-                storedCall.reject("Recording error: " + e.getMessage());
+                storedCall.reject("Button error: " + e.getMessage());
             }
         });
 
-        parent.addView(recordButton);
-        Log.d("VideoHighFps", "✅ 3 -=====>3 addControlButton");
+        activity.runOnUiThread(() -> {
+            FrameLayout root = activity.findViewById(android.R.id.content);
+            FrameLayout overlay = new FrameLayout(activity);
+            overlay.setLayoutParams(new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT));
+            overlay.addView(recordButton);
+            root.addView(overlay);
+        });
     }
 
-    @PermissionCallback
-    private void onCameraPermissionResult(PluginCall call) {
-        if (getPermissionState("camera") == PermissionState.GRANTED) {
-            Log.d("VideoHighFps", "✅-=====> permission granted");
-            openCamera(call);
-        } else {
-            Log.d("VideoHighFps", "❌-=====> permission not granted");
-            call.reject("Permission not granted.");
-        }
+    private void setupMediaRecorder() throws Exception {
+        File outputDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES);
+        String fileName = "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".mp4";
+        videoPath = new File(outputDir, fileName).getAbsolutePath();
+
+        mediaRecorder = new MediaRecorder();
+        mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+        mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
+        mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+        mediaRecorder.setOutputFile(videoPath);
+        mediaRecorder.setVideoFrameRate(videoFrameRate);
+        mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+        mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+        mediaRecorder.setVideoEncodingBitRate(15_000_000);
+        mediaRecorder.setVideoSize(selectedSize.getWidth(), selectedSize.getHeight());
+        mediaRecorder.prepare();
+        Thread.sleep(500);
     }
 
-    private void selectResolutionBasedOnQuality() throws CameraAccessException {
-        CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
-        StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-        Size[] supportedSizes = map.getOutputSizes(MediaRecorder.class);
-
-        switch (videoQuality) {
-            case "uhd":
-                selectedSize = findMatchingSize(supportedSizes, 3840, 2160);
-                break;
-            case "fhd":
-                selectedSize = findMatchingSize(supportedSizes, 1920, 1080);
-                break;
-            default:
-                selectedSize = findMatchingSize(supportedSizes, 1280, 720);
-                break;
-        }
-    }
-
-    private Size findMatchingSize(Size[] sizes, int width, int height) {
-        for (Size s : sizes)
-            if (s.getWidth() >= width && s.getHeight() >= height)
-                return s;
-        return sizes[0];
-    }
-
-    private String getBackCameraId() throws CameraAccessException {
-        for (String cameraId : cameraManager.getCameraIdList()) {
-            CameraCharacteristics c = cameraManager.getCameraCharacteristics(cameraId);
-            Integer facing = c.get(CameraCharacteristics.LENS_FACING);
-            if (facing != null && facing == CameraCharacteristics.LENS_FACING_BACK)
-                return cameraId;
-        }
-        throw new CameraAccessException(CameraAccessException.CAMERA_ERROR, "Back-facing camera not found");
-    }
-
-    @SuppressLint("MissingPermission")
-    private void openNativeCamera() {
-        try {
-            cameraManager.openCamera(selectedCameraId, new CameraDevice.StateCallback() {
-                public void onOpened(CameraDevice camera) {
-                    cameraDevice = camera;
-                    try {
-                        startCaptureSession();
-                    } catch (Exception e) {
-                        storedCall.reject("Capture session failed: " + e.getMessage());
-                    }
-                }
-
-                public void onDisconnected(CameraDevice camera) {
-                    camera.close();
-                    cameraDevice = null;
-                }
-
-                public void onError(CameraDevice camera, int error) {
-                    camera.close();
-                    cameraDevice = null;
-                }
-            }, backgroundHandler);
-        } catch (Exception e) {
-            storedCall.reject("Camera open failed: " + e.getMessage());
-        }
-    }
-
-    private void startCaptureSession() throws Exception {
-        setupMediaRecorder();
+    private void startCaptureSession() throws CameraAccessException {
         Surface recorderSurface = mediaRecorder.getSurface();
 
-        cameraDevice.createCaptureSession(Arrays.asList(previewSurface, recorderSurface),
+        cameraDevice.createConstrainedHighSpeedCaptureSession(
+                Arrays.asList(recorderSurface),
                 new CameraCaptureSession.StateCallback() {
                     public void onConfigured(CameraCaptureSession session) {
                         captureSession = session;
                         try {
+                            CameraConstrainedHighSpeedCaptureSession hsSession = (CameraConstrainedHighSpeedCaptureSession) session;
                             CaptureRequest.Builder builder = cameraDevice
                                     .createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-                            builder.addTarget(previewSurface);
                             builder.addTarget(recorderSurface);
                             builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-                            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                                    new Range<>(videoFrameRate, videoFrameRate));
-                            session.setRepeatingRequest(builder.build(), null, backgroundHandler);
+                            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(120, 120));
+
+                            hsSession.setRepeatingBurst(
+                                    hsSession.createHighSpeedRequestList(builder.build()),
+                                    null, backgroundHandler);
                         } catch (Exception e) {
-                            storedCall.reject("Failed to start preview: " + e.getMessage());
+                            storedCall.reject("Capture failed: " + e.getMessage());
                         }
                     }
 
                     public void onConfigureFailed(CameraCaptureSession session) {
-                        storedCall.reject("Camera configuration failed");
+                        storedCall.reject("Configuration failed");
                     }
-                }, backgroundHandler);
+                },
+                backgroundHandler);
     }
 
     private void stopNativeRecording() {
@@ -292,86 +226,11 @@ public class VideoHighFpsPlugin extends Plugin {
             if (cameraDevice != null)
                 cameraDevice.close();
 
-            if (textureView != null && textureView.getParent() instanceof ViewGroup) {
-                ViewGroup parent = (ViewGroup) textureView.getParent();
-                ViewGroup root = (ViewGroup) parent.getParent();
-                if (root != null) {
-                    root.removeView(parent); // removes full overlay frame
-                }
-            }
-
-            // ✅ Scan the saved video to make it visible in the Gallery
-            if (videoPath != null) {
-                MediaScannerConnection.scanFile(getContext(),
-                        new String[] { videoPath },
-                        new String[] { "video/mp4" },
-                        null);
-            }
-
-            // ✅ Send result back to Capacitor
             JSObject ret = new JSObject();
             ret.put("videoPath", videoPath);
             storedCall.resolve(ret);
-
         } catch (Exception e) {
-            storedCall.reject("Error stopping recording: " + e.getMessage());
+            storedCall.reject("Stop failed: " + e.getMessage());
         }
-    }
-
-    private int safeGetInt(PluginCall call, String key, int defaultValue) {
-        Integer value = call.getInt(key, defaultValue);
-        return (value != null) ? value : defaultValue;
-    }
-
-    private int getOrientationHint() throws CameraAccessException {
-        CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
-        int sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
-
-        int rotation = getActivity().getWindowManager().getDefaultDisplay().getRotation();
-        int degrees = 0;
-        switch (rotation) {
-            case Surface.ROTATION_0:
-                degrees = 0;
-                break;
-            case Surface.ROTATION_90:
-                degrees = 90;
-                break;
-            case Surface.ROTATION_180:
-                degrees = 180;
-                break;
-            case Surface.ROTATION_270:
-                degrees = 270;
-                break;
-        }
-
-        return (sensorOrientation - degrees + 360) % 360;
-    }
-
-    private void setupMediaRecorder() throws Exception {
-        File outputDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES);
-
-        String fileName = "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".mp4";
-        videoPath = new File(outputDir, fileName).getAbsolutePath();
-        Log.d("VideoHighFps -=>", "✅ Saved videoPath: " + videoPath);
-
-        mediaRecorder = new MediaRecorder();
-        mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-        mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
-        mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-        mediaRecorder.setOutputFile(videoPath);
-        mediaRecorder.setVideoFrameRate(videoFrameRate);
-        mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-        mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-        mediaRecorder.setVideoEncodingBitRate(15_000_000);
-        mediaRecorder.setVideoSize(selectedSize.getWidth(), selectedSize.getHeight());
-        mediaRecorder.setOrientationHint(getOrientationHint());
-
-        if (videoDuration > 0)
-            mediaRecorder.setMaxDuration(videoDuration * 1000);
-        if (videoSizeLimit > 0)
-            mediaRecorder.setMaxFileSize(videoSizeLimit);
-
-        mediaRecorder.prepare();
-        Thread.sleep(500); // Add this line
     }
 }
