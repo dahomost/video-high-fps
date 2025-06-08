@@ -3,24 +3,30 @@ package com.daho.videohighfps;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
-import android.graphics.SurfaceTexture;
+import android.content.pm.PackageManager;
+import android.graphics.drawable.GradientDrawable;
 import android.hardware.camera2.*;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.MediaRecorder;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.SystemClock;
 import android.util.Log;
 import android.util.Range;
 import android.util.Size;
-import android.view.Display;
 import android.view.Gravity;
 import android.view.Surface;
+import android.graphics.SurfaceTexture;
 import android.view.TextureView;
+import android.view.View;
 import android.view.ViewGroup;
-import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+
+import androidx.core.app.ActivityCompat;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -36,7 +42,8 @@ import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
-import android.annotation.SuppressLint;
+import android.graphics.Matrix;
+import android.graphics.RectF;
 
 @CapacitorPlugin(name = "VideoHighFps", permissions = {
         @Permission(strings = { Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO }, alias = "camera")
@@ -51,16 +58,18 @@ public class VideoHighFpsPlugin extends Plugin {
 
     private Size selectedSize = new Size(1280, 720);
     private String selectedCameraId = null;
-
-    private int videoDuration = 0;
     private int videoFrameRate = 120;
-    private int videoSizeLimit = 0;
     private boolean isRecording = false;
+    private boolean isPaused = false;
     private PluginCall storedCall;
-
     private TextureView textureView;
     private Surface previewSurface;
     private FrameLayout overlay;
+
+    private Button recordButton, pauseButton, stopButton, backButton;
+    private TextView timerView;
+    private Handler timerHandler = new Handler();
+    private long startTime;
 
     @PluginMethod
     public void openCamera(PluginCall call) {
@@ -70,12 +79,10 @@ public class VideoHighFpsPlugin extends Plugin {
             return;
         }
 
-        Log.d("VideoHighFps", "✅-=====> open camera, permission granted--");
+        Log.d("VideoHighFps", "✅-=====> open camera, permission granted...");
 
         storedCall = call;
-        videoDuration = call.getInt("duration", 0);
         videoFrameRate = call.getInt("frameRate", 120);
-        videoSizeLimit = call.getInt("sizeLimit", 0);
 
         Context context = getContext();
         cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
@@ -113,29 +120,38 @@ public class VideoHighFpsPlugin extends Plugin {
         }
     }
 
-    @SuppressLint("MissingPermission")
     private void openNativeCamera() throws CameraAccessException {
+        Activity activity = getActivity();
+
+        if (ActivityCompat.checkSelfPermission(activity,
+                Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            storedCall.reject("Camera permission not granted");
+            return;
+        }
+
+        showControlButton();
+
         cameraManager.openCamera(selectedCameraId, new CameraDevice.StateCallback() {
+            @Override
             public void onOpened(CameraDevice camera) {
                 cameraDevice = camera;
                 try {
-                    setupMediaRecorder();
                     startCaptureSession();
                 } catch (Exception e) {
                     storedCall.reject("Camera session error: " + e.getMessage());
                 }
             }
 
+            @Override
             public void onDisconnected(CameraDevice camera) {
                 camera.close();
             }
 
+            @Override
             public void onError(CameraDevice camera, int error) {
                 camera.close();
             }
         }, backgroundHandler);
-
-        showControlButton();
     }
 
     private void showControlButton() {
@@ -147,6 +163,7 @@ public class VideoHighFpsPlugin extends Plugin {
             public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
                 surface.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
                 previewSurface = new Surface(surface);
+                configureTransform(width, height); // ✅ apply fix for orientation
             }
 
             @Override
@@ -163,43 +180,153 @@ public class VideoHighFpsPlugin extends Plugin {
             }
         });
 
-        Button recordButton = new Button(activity);
-        recordButton.setText("▶ Start");
+        recordButton = createStyledButton("🔴", 0x44aaaaaa);
+        pauseButton = createStyledButton("❘ ❘", 0x44aaaaaa);
+        stopButton = createStyledButton("■", 0x44aaaaaa);
+        backButton = createStyledButton("⨉", 0x44aaaaaa);
 
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        lp.setMargins(0, 0, 0, 120);
-        recordButton.setLayoutParams(lp);
+        pauseButton.setVisibility(View.GONE);
+        stopButton.setVisibility(View.GONE);
 
         recordButton.setOnClickListener(v -> {
             try {
-                if (!isRecording) {
-                    mediaRecorder.start();
-                    isRecording = true;
-                    recordButton.setText("⏹ Stop");
-                } else {
-                    isRecording = false;
-                    recordButton.setEnabled(false);
-                    stopNativeRecording();
-                }
+                mediaRecorder.start();
+                isRecording = true;
+                isPaused = false;
+                startTime = SystemClock.elapsedRealtime();
+                timerHandler.post(timerRunnable);
+                recordButton.setVisibility(View.GONE);
+                backButton.setVisibility(View.GONE);
+                pauseButton.setVisibility(View.VISIBLE);
+                stopButton.setVisibility(View.VISIBLE);
             } catch (Exception e) {
                 storedCall.reject("Button error: " + e.getMessage());
             }
         });
 
+        backButton.setOnClickListener(v -> {
+            try {
+                if (captureSession != null)
+                    captureSession.close();
+                if (cameraDevice != null)
+                    cameraDevice.close();
+                if (mediaRecorder != null) {
+                    mediaRecorder.reset(); // safe even if not started
+                    mediaRecorder.release();
+                    mediaRecorder = null;
+                }
+                getActivity().runOnUiThread(() -> {
+                    FrameLayout root = getActivity().findViewById(android.R.id.content);
+                    if (overlay != null)
+                        root.removeView(overlay);
+                });
+            } catch (Exception e) {
+                Log.e("VideoHighFps", "Back button error: " + e.getMessage());
+            }
+        });
+
+        pauseButton.setOnClickListener(v -> {
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                    if (!isPaused) {
+                        mediaRecorder.pause();
+                        isPaused = true;
+                        pauseButton.setText("▶");
+                        timerHandler.removeCallbacks(timerRunnable);
+                    } else {
+                        mediaRecorder.resume();
+                        isPaused = false;
+                        pauseButton.setText("❘ ❘");
+                        timerHandler.post(timerRunnable);
+                    }
+                }
+            } catch (Exception e) {
+                storedCall.reject("Pause error: " + e.getMessage());
+            }
+        });
+
+        stopButton.setOnClickListener(v -> {
+            timerHandler.removeCallbacks(timerRunnable);
+            stopNativeRecording();
+        });
+
+        timerView = new TextView(activity);
+        timerView.setText("00:00");
+        timerView.setTextSize(20);
+        timerView.setTextColor(0xFFFFFFFF);
+        timerView.setBackgroundColor(0xAA000000);
+        timerView.setPadding(20, 10, 20, 10);
+        FrameLayout.LayoutParams timerLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        timerLp.setMargins(0, 60, 0, 0);
+        timerView.setLayoutParams(timerLp);
+
+        LinearLayout horizontalLayout = new LinearLayout(activity);
+        horizontalLayout.setOrientation(LinearLayout.HORIZONTAL);
+        horizontalLayout.setGravity(Gravity.CENTER);
+        FrameLayout.LayoutParams buttonRowParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        buttonRowParams.setMargins(0, 0, 0, 80);
+        horizontalLayout.setLayoutParams(buttonRowParams);
+
+        LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(200, 200);
+        btnParams.setMargins(20, 0, 20, 0);
+        recordButton.setLayoutParams(btnParams);
+        backButton.setLayoutParams(btnParams);
+        horizontalLayout.addView(backButton);
+        horizontalLayout.addView(recordButton);
+
+        FrameLayout.LayoutParams pauseLp = new FrameLayout.LayoutParams(160, 160, Gravity.BOTTOM | Gravity.START);
+        pauseLp.setMargins(80, 0, 0, 100);
+        pauseButton.setLayoutParams(pauseLp);
+
+        FrameLayout.LayoutParams stopLp = new FrameLayout.LayoutParams(160, 160, Gravity.BOTTOM | Gravity.END);
+        stopLp.setMargins(0, 0, 80, 100);
+        stopButton.setLayoutParams(stopLp);
+
+        overlay = new FrameLayout(activity);
+        overlay.setLayoutParams(new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        overlay.addView(textureView);
+        overlay.addView(timerView);
+        overlay.addView(horizontalLayout);
+        overlay.addView(pauseButton);
+        overlay.addView(stopButton);
+
         activity.runOnUiThread(() -> {
             FrameLayout root = activity.findViewById(android.R.id.content);
-            overlay = new FrameLayout(activity);
-            overlay.setLayoutParams(new FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT));
-            overlay.addView(textureView);
-            overlay.addView(recordButton);
             root.addView(overlay);
         });
     }
+
+    private Button createStyledButton(String icon, int color) {
+        Button btn = new Button(getActivity());
+        btn.setText(icon);
+        btn.setTextSize(28);
+        btn.setTextColor(0xFFFFFFFF);
+        GradientDrawable shape = new GradientDrawable();
+        shape.setShape(GradientDrawable.OVAL);
+        shape.setColor(color);
+        shape.setSize(180, 180);
+        btn.setBackground(shape);
+        return btn;
+    }
+
+    private final Runnable timerRunnable = new Runnable() {
+        public void run() {
+            long elapsed = SystemClock.elapsedRealtime() - startTime;
+            int seconds = (int) (elapsed / 1000);
+            int minutes = seconds / 60;
+            seconds = seconds % 60;
+            timerView.setText(String.format("%02d:%02d", minutes, seconds));
+            timerHandler.postDelayed(this, 1000);
+        }
+    };
 
     private void setupMediaRecorder() throws Exception {
         File outputDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES);
@@ -218,11 +345,8 @@ public class VideoHighFpsPlugin extends Plugin {
         mediaRecorder.setVideoSize(selectedSize.getWidth(), selectedSize.getHeight());
 
         int rotation = getActivity().getWindowManager().getDefaultDisplay().getRotation();
-        int degrees = 0;
+        int degrees = 90;
         switch (rotation) {
-            case Surface.ROTATION_0:
-                degrees = 90;
-                break;
             case Surface.ROTATION_90:
                 degrees = 0;
                 break;
@@ -234,7 +358,6 @@ public class VideoHighFpsPlugin extends Plugin {
                 break;
         }
         mediaRecorder.setOrientationHint(degrees);
-
         mediaRecorder.prepare();
         Thread.sleep(500);
     }
@@ -242,7 +365,6 @@ public class VideoHighFpsPlugin extends Plugin {
     private void startCaptureSession() throws Exception {
         CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
         StreamConfigurationMap configMap = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-
         Size[] highSpeedSizes = configMap.getHighSpeedVideoSizes();
         Size bestSize = null;
 
@@ -259,9 +381,8 @@ public class VideoHighFpsPlugin extends Plugin {
             }
         }
 
-        if (bestSize == null) {
+        if (bestSize == null)
             throw new Exception("❌ No resolution supports 120fps on this device");
-        }
 
         selectedSize = bestSize;
         Log.d("VideoHighFps", "✅ Using size for 120fps: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
@@ -273,6 +394,7 @@ public class VideoHighFpsPlugin extends Plugin {
         cameraDevice.createConstrainedHighSpeedCaptureSession(
                 surfaces,
                 new CameraCaptureSession.StateCallback() {
+                    @Override
                     public void onConfigured(CameraCaptureSession session) {
                         captureSession = session;
                         try {
@@ -290,11 +412,11 @@ public class VideoHighFpsPlugin extends Plugin {
                         }
                     }
 
+                    @Override
                     public void onConfigureFailed(CameraCaptureSession session) {
                         storedCall.reject("⚠️ High-speed configuration failed");
                     }
-                },
-                backgroundHandler);
+                }, backgroundHandler);
     }
 
     private void stopNativeRecording() {
@@ -310,13 +432,10 @@ public class VideoHighFpsPlugin extends Plugin {
             if (cameraDevice != null)
                 cameraDevice.close();
 
-            Activity activity = getActivity();
-            activity.runOnUiThread(() -> {
-                FrameLayout root = activity.findViewById(android.R.id.content);
-                if (overlay != null) {
+            getActivity().runOnUiThread(() -> {
+                FrameLayout root = getActivity().findViewById(android.R.id.content);
+                if (overlay != null)
                     root.removeView(overlay);
-                    overlay = null;
-                }
             });
 
             JSObject ret = new JSObject();
@@ -325,5 +444,33 @@ public class VideoHighFpsPlugin extends Plugin {
         } catch (Exception e) {
             storedCall.reject("Stop failed: " + e.getMessage());
         }
+    }
+
+    private void configureTransform(int viewWidth, int viewHeight) {
+        Activity activity = getActivity();
+        if (textureView == null || selectedSize == null)
+            return;
+
+        Matrix matrix = new Matrix();
+        int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
+
+        RectF viewRect = new RectF(0, 0, viewWidth, viewHeight);
+        RectF bufferRect = new RectF(0, 0, selectedSize.getHeight(), selectedSize.getWidth());
+        float centerX = viewRect.centerX();
+        float centerY = viewRect.centerY();
+
+        if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
+            bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY());
+            matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL);
+            float scale = Math.max(
+                    (float) viewHeight / selectedSize.getHeight(),
+                    (float) viewWidth / selectedSize.getWidth());
+            matrix.postScale(scale, scale, centerX, centerY);
+            matrix.postRotate(90 * (rotation - 2), centerX, centerY);
+        } else if (rotation == Surface.ROTATION_180) {
+            matrix.postRotate(180, centerX, centerY);
+        }
+
+        textureView.setTransform(matrix);
     }
 }
