@@ -25,7 +25,7 @@ import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-
+import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 
 import com.getcapacitor.JSObject;
@@ -44,6 +44,7 @@ import java.util.Date;
 import java.util.Locale;
 import android.graphics.Matrix;
 import android.graphics.RectF;
+import android.annotation.SuppressLint;
 
 @CapacitorPlugin(name = "VideoHighFps", permissions = {
         @Permission(strings = { Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO }, alias = "camera")
@@ -68,21 +69,23 @@ public class VideoHighFpsPlugin extends Plugin {
 
     private Button recordButton, pauseButton, stopButton, backButton;
     private TextView timerView;
-    private Handler timerHandler = new Handler();
+    private final Handler timerHandler = new Handler();
     private long startTime;
 
     @PluginMethod
     public void openCamera(PluginCall call) {
         if (getPermissionState("camera") != PermissionState.GRANTED) {
             requestPermissionForAlias("camera", call, "onCameraPermissionResult");
-            Log.d("VideoHighFps", "❌-=====> open camera, permission denied");
+            Log.d("VideoHighFps", "--> open camera, permission denied");
             return;
         }
 
-        Log.d("VideoHighFps", "✅-=====> open camera, permission granted...");
+        Log.d("VideoHighFps", "--> open camera, permission granted");
 
         storedCall = call;
-        videoFrameRate = call.getInt("frameRate", 120);
+        Integer frameRateValue = call.getInt("frameRate", 120);
+        videoFrameRate = (frameRateValue != null) ? frameRateValue : 120;
+        // videoFrameRate = call.getInt("frameRate", 120);
 
         Context context = getContext();
         cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
@@ -102,7 +105,8 @@ public class VideoHighFpsPlugin extends Plugin {
     private String getBackCameraId() throws CameraAccessException {
         for (String cameraId : cameraManager.getCameraIdList()) {
             CameraCharacteristics c = cameraManager.getCameraCharacteristics(cameraId);
-            if (c.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK) {
+            Integer lensFacing = c.get(CameraCharacteristics.LENS_FACING);
+            if (lensFacing != null && lensFacing == CameraCharacteristics.LENS_FACING_BACK) {
                 return cameraId;
             }
         }
@@ -112,10 +116,10 @@ public class VideoHighFpsPlugin extends Plugin {
     @PermissionCallback
     private void onCameraPermissionResult(PluginCall call) {
         if (getPermissionState("camera") == PermissionState.GRANTED) {
-            Log.d("VideoHighFps", "✅-=====> permission granted");
+            Log.d("VideoHighFps", "--> permission granted");
             openCamera(call);
         } else {
-            Log.d("VideoHighFps", "❌-=====> permission not granted");
+            Log.d("VideoHighFps", "--> permission not granted");
             call.reject("Permission denied");
         }
     }
@@ -133,7 +137,7 @@ public class VideoHighFpsPlugin extends Plugin {
 
         cameraManager.openCamera(selectedCameraId, new CameraDevice.StateCallback() {
             @Override
-            public void onOpened(CameraDevice camera) {
+            public void onOpened(@NonNull CameraDevice camera) {
                 cameraDevice = camera;
                 try {
                     startCaptureSession();
@@ -143,47 +147,48 @@ public class VideoHighFpsPlugin extends Plugin {
             }
 
             @Override
-            public void onDisconnected(CameraDevice camera) {
+            public void onDisconnected(@NonNull CameraDevice camera) {
                 camera.close();
             }
 
             @Override
-            public void onError(CameraDevice camera, int error) {
+            public void onError(@NonNull CameraDevice camera, int error) {
                 camera.close();
             }
         }, backgroundHandler);
     }
 
+    @SuppressLint("SetTextI18n")
     private void showControlButton() {
         Activity activity = getActivity();
 
         textureView = new TextureView(activity);
         textureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override
-            public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
+            public void onSurfaceTextureAvailable(@NonNull SurfaceTexture surface, int width, int height) {
                 surface.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
                 previewSurface = new Surface(surface);
-                configureTransform(width, height); // ✅ apply fix for orientation
+                configureTransform(width, height);
             }
 
             @Override
-            public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
+            public void onSurfaceTextureSizeChanged(@NonNull SurfaceTexture surface, int width, int height) {
             }
 
             @Override
-            public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+            public boolean onSurfaceTextureDestroyed(@NonNull SurfaceTexture surface) {
                 return true;
             }
 
             @Override
-            public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+            public void onSurfaceTextureUpdated(@NonNull SurfaceTexture surface) {
             }
         });
 
-        recordButton = createStyledButton("🔴", 0x44aaaaaa);
-        pauseButton = createStyledButton("❘ ❘", 0x44aaaaaa);
-        stopButton = createStyledButton("■", 0x44aaaaaa);
-        backButton = createStyledButton("⨉", 0x44aaaaaa);
+        recordButton = createStyledButton("🔴");
+        pauseButton = createStyledButton("❘ ❘");
+        stopButton = createStyledButton("■");
+        backButton = createStyledButton("⨉");
 
         pauseButton.setVisibility(View.GONE);
         stopButton.setVisibility(View.GONE);
@@ -304,20 +309,21 @@ public class VideoHighFpsPlugin extends Plugin {
         });
     }
 
-    private Button createStyledButton(String icon, int color) {
+    private Button createStyledButton(String icon) {
         Button btn = new Button(getActivity());
         btn.setText(icon);
         btn.setTextSize(28);
         btn.setTextColor(0xFFFFFFFF);
         GradientDrawable shape = new GradientDrawable();
         shape.setShape(GradientDrawable.OVAL);
-        shape.setColor(color);
+        shape.setColor(1152035498);
         shape.setSize(180, 180);
         btn.setBackground(shape);
         return btn;
     }
 
     private final Runnable timerRunnable = new Runnable() {
+        @SuppressLint("DefaultLocale")
         public void run() {
             long elapsed = SystemClock.elapsedRealtime() - startTime;
             int seconds = (int) (elapsed / 1000);
@@ -356,6 +362,8 @@ public class VideoHighFpsPlugin extends Plugin {
             case Surface.ROTATION_270:
                 degrees = 180;
                 break;
+            case Surface.ROTATION_0:
+                break;
         }
         mediaRecorder.setOrientationHint(degrees);
         mediaRecorder.prepare();
@@ -365,6 +373,7 @@ public class VideoHighFpsPlugin extends Plugin {
     private void startCaptureSession() throws Exception {
         CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
         StreamConfigurationMap configMap = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+        assert configMap != null;
         Size[] highSpeedSizes = configMap.getHighSpeedVideoSizes();
         Size bestSize = null;
 
@@ -385,7 +394,7 @@ public class VideoHighFpsPlugin extends Plugin {
             throw new Exception("❌ No resolution supports 120fps on this device");
 
         selectedSize = bestSize;
-        Log.d("VideoHighFps", "✅ Using size for 120fps: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
+        Log.d("VideoHighFps", "Using size for 120fps: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
 
         setupMediaRecorder();
         Surface recorderSurface = mediaRecorder.getSurface();
@@ -395,7 +404,7 @@ public class VideoHighFpsPlugin extends Plugin {
                 surfaces,
                 new CameraCaptureSession.StateCallback() {
                     @Override
-                    public void onConfigured(CameraCaptureSession session) {
+                    public void onConfigured(@NonNull CameraCaptureSession session) {
                         captureSession = session;
                         try {
                             CameraConstrainedHighSpeedCaptureSession hsSession = (CameraConstrainedHighSpeedCaptureSession) session;
@@ -408,13 +417,13 @@ public class VideoHighFpsPlugin extends Plugin {
                             hsSession.setRepeatingBurst(hsSession.createHighSpeedRequestList(builder.build()), null,
                                     backgroundHandler);
                         } catch (Exception e) {
-                            storedCall.reject("⚠️ Capture failed: " + e.getMessage());
+                            storedCall.reject("Capture failed: " + e.getMessage());
                         }
                     }
 
                     @Override
-                    public void onConfigureFailed(CameraCaptureSession session) {
-                        storedCall.reject("⚠️ High-speed configuration failed");
+                    public void onConfigureFailed(@NonNull CameraCaptureSession session) {
+                        storedCall.reject("High-speed configuration failed");
                     }
                 }, backgroundHandler);
     }
