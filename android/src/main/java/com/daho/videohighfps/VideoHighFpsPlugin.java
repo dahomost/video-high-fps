@@ -3,7 +3,9 @@ package com.daho.videohighfps;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
+import android.graphics.SurfaceTexture;
 import android.hardware.camera2.*;
+import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.MediaRecorder;
 import android.os.Environment;
 import android.os.Handler;
@@ -11,9 +13,12 @@ import android.os.HandlerThread;
 import android.util.Log;
 import android.util.Range;
 import android.util.Size;
+import android.view.Display;
 import android.view.Gravity;
 import android.view.Surface;
+import android.view.TextureView;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
 
@@ -32,7 +37,6 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
 import android.annotation.SuppressLint;
-import android.hardware.camera2.params.StreamConfigurationMap;
 
 @CapacitorPlugin(name = "VideoHighFps", permissions = {
         @Permission(strings = { Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO }, alias = "camera")
@@ -54,12 +58,19 @@ public class VideoHighFpsPlugin extends Plugin {
     private boolean isRecording = false;
     private PluginCall storedCall;
 
+    private TextureView textureView;
+    private Surface previewSurface;
+    private FrameLayout overlay;
+
     @PluginMethod
     public void openCamera(PluginCall call) {
         if (getPermissionState("camera") != PermissionState.GRANTED) {
             requestPermissionForAlias("camera", call, "onCameraPermissionResult");
+            Log.d("VideoHighFps", "❌-=====> open camera, permission denied");
             return;
         }
+
+        Log.d("VideoHighFps", "✅-=====> open camera, permission granted--");
 
         storedCall = call;
         videoDuration = call.getInt("duration", 0);
@@ -94,8 +105,10 @@ public class VideoHighFpsPlugin extends Plugin {
     @PermissionCallback
     private void onCameraPermissionResult(PluginCall call) {
         if (getPermissionState("camera") == PermissionState.GRANTED) {
+            Log.d("VideoHighFps", "✅-=====> permission granted");
             openCamera(call);
         } else {
+            Log.d("VideoHighFps", "❌-=====> permission not granted");
             call.reject("Permission denied");
         }
     }
@@ -127,6 +140,29 @@ public class VideoHighFpsPlugin extends Plugin {
 
     private void showControlButton() {
         Activity activity = getActivity();
+
+        textureView = new TextureView(activity);
+        textureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+            @Override
+            public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
+                surface.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
+                previewSurface = new Surface(surface);
+            }
+
+            @Override
+            public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
+            }
+
+            @Override
+            public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+                return true;
+            }
+
+            @Override
+            public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+            }
+        });
+
         Button recordButton = new Button(activity);
         recordButton.setText("▶ Start");
 
@@ -155,10 +191,11 @@ public class VideoHighFpsPlugin extends Plugin {
 
         activity.runOnUiThread(() -> {
             FrameLayout root = activity.findViewById(android.R.id.content);
-            FrameLayout overlay = new FrameLayout(activity);
+            overlay = new FrameLayout(activity);
             overlay.setLayoutParams(new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.MATCH_PARENT));
+            overlay.addView(textureView);
             overlay.addView(recordButton);
             root.addView(overlay);
         });
@@ -179,16 +216,33 @@ public class VideoHighFpsPlugin extends Plugin {
         mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
         mediaRecorder.setVideoEncodingBitRate(15_000_000);
         mediaRecorder.setVideoSize(selectedSize.getWidth(), selectedSize.getHeight());
+
+        int rotation = getActivity().getWindowManager().getDefaultDisplay().getRotation();
+        int degrees = 0;
+        switch (rotation) {
+            case Surface.ROTATION_0:
+                degrees = 90;
+                break;
+            case Surface.ROTATION_90:
+                degrees = 0;
+                break;
+            case Surface.ROTATION_180:
+                degrees = 270;
+                break;
+            case Surface.ROTATION_270:
+                degrees = 180;
+                break;
+        }
+        mediaRecorder.setOrientationHint(degrees);
+
         mediaRecorder.prepare();
         Thread.sleep(500);
     }
 
     private void startCaptureSession() throws Exception {
-        // ✅ Query camera characteristics
         CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
         StreamConfigurationMap configMap = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
 
-        // ✅ Log and find best size supporting 120fps
         Size[] highSpeedSizes = configMap.getHighSpeedVideoSizes();
         Size bestSize = null;
 
@@ -209,14 +263,12 @@ public class VideoHighFpsPlugin extends Plugin {
             throw new Exception("❌ No resolution supports 120fps on this device");
         }
 
-        selectedSize = bestSize; // ✅ Update global size
+        selectedSize = bestSize;
         Log.d("VideoHighFps", "✅ Using size for 120fps: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
 
-        // ✅ Re-prepare recorder with updated size
         setupMediaRecorder();
-
         Surface recorderSurface = mediaRecorder.getSurface();
-        java.util.List<Surface> surfaces = Arrays.asList(recorderSurface);
+        java.util.List<Surface> surfaces = Arrays.asList(previewSurface, recorderSurface);
 
         cameraDevice.createConstrainedHighSpeedCaptureSession(
                 surfaces,
@@ -227,10 +279,10 @@ public class VideoHighFpsPlugin extends Plugin {
                             CameraConstrainedHighSpeedCaptureSession hsSession = (CameraConstrainedHighSpeedCaptureSession) session;
                             CaptureRequest.Builder builder = cameraDevice
                                     .createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+                            builder.addTarget(previewSurface);
                             builder.addTarget(recorderSurface);
                             builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
                             builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(120, 120));
-
                             hsSession.setRepeatingBurst(hsSession.createHighSpeedRequestList(builder.build()), null,
                                     backgroundHandler);
                         } catch (Exception e) {
@@ -257,6 +309,15 @@ public class VideoHighFpsPlugin extends Plugin {
                 captureSession.close();
             if (cameraDevice != null)
                 cameraDevice.close();
+
+            Activity activity = getActivity();
+            activity.runOnUiThread(() -> {
+                FrameLayout root = activity.findViewById(android.R.id.content);
+                if (overlay != null) {
+                    root.removeView(overlay);
+                    overlay = null;
+                }
+            });
 
             JSObject ret = new JSObject();
             ret.put("videoPath", videoPath);
