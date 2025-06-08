@@ -32,6 +32,7 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
 import android.annotation.SuppressLint;
+import android.hardware.camera2.params.StreamConfigurationMap;
 
 @CapacitorPlugin(name = "VideoHighFps", permissions = {
         @Permission(strings = { Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO }, alias = "camera")
@@ -182,11 +183,43 @@ public class VideoHighFpsPlugin extends Plugin {
         Thread.sleep(500);
     }
 
-    private void startCaptureSession() throws CameraAccessException {
+    private void startCaptureSession() throws Exception {
+        // ✅ Query camera characteristics
+        CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
+        StreamConfigurationMap configMap = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+
+        // ✅ Log and find best size supporting 120fps
+        Size[] highSpeedSizes = configMap.getHighSpeedVideoSizes();
+        Size bestSize = null;
+
+        for (Size size : highSpeedSizes) {
+            Range<Integer>[] fpsRanges = configMap.getHighSpeedVideoFpsRangesFor(size);
+            for (Range<Integer> range : fpsRanges) {
+                Log.d("VideoHighFps", "🔍 Size " + size + " supports FPS range: " + range);
+                if (range.contains(120)) {
+                    if (bestSize == null
+                            || (size.getWidth() >= bestSize.getWidth() && size.getHeight() >= bestSize.getHeight())) {
+                        bestSize = size;
+                    }
+                }
+            }
+        }
+
+        if (bestSize == null) {
+            throw new Exception("❌ No resolution supports 120fps on this device");
+        }
+
+        selectedSize = bestSize; // ✅ Update global size
+        Log.d("VideoHighFps", "✅ Using size for 120fps: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
+
+        // ✅ Re-prepare recorder with updated size
+        setupMediaRecorder();
+
         Surface recorderSurface = mediaRecorder.getSurface();
+        java.util.List<Surface> surfaces = Arrays.asList(recorderSurface);
 
         cameraDevice.createConstrainedHighSpeedCaptureSession(
-                Arrays.asList(recorderSurface),
+                surfaces,
                 new CameraCaptureSession.StateCallback() {
                     public void onConfigured(CameraCaptureSession session) {
                         captureSession = session;
@@ -198,16 +231,15 @@ public class VideoHighFpsPlugin extends Plugin {
                             builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
                             builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(120, 120));
 
-                            hsSession.setRepeatingBurst(
-                                    hsSession.createHighSpeedRequestList(builder.build()),
-                                    null, backgroundHandler);
+                            hsSession.setRepeatingBurst(hsSession.createHighSpeedRequestList(builder.build()), null,
+                                    backgroundHandler);
                         } catch (Exception e) {
-                            storedCall.reject("Capture failed: " + e.getMessage());
+                            storedCall.reject("⚠️ Capture failed: " + e.getMessage());
                         }
                     }
 
                     public void onConfigureFailed(CameraCaptureSession session) {
-                        storedCall.reject("Configuration failed");
+                        storedCall.reject("⚠️ High-speed configuration failed");
                     }
                 },
                 backgroundHandler);
