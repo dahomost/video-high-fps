@@ -1,8 +1,8 @@
 import { WebPlugin } from '@capacitor/core';
-import type { CaptureVideoOptions, MediaFileResult } from './definitions';
+import type { TpaCameraPlugin, videoOptions, VideoRecordingResult } from './definitions';
 
-export class VideoHighFpsWeb extends WebPlugin {
-  async openCamera(_options: CaptureVideoOptions): Promise<MediaFileResult> {
-    throw this.unimplemented('openCamera is not available on web.');
+export class TpaCameraWeb extends WebPlugin implements TpaCameraPlugin {
+  async startRecording(_options: videoOptions): Promise<VideoRecordingResult> {
+    throw this.unimplemented('open Camera plugin is not available on web.');
   }
 }

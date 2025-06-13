@@ -1,6 +1,9 @@
 import { registerPlugin } from '@capacitor/core';
-import type { VideoHighFpsPlugin } from './definitions';
+import type { TpaCameraPlugin } from './definitions';
 
-export const VideoHighFps = registerPlugin<VideoHighFpsPlugin>('VideoHighFps', {
-  web: () => import('./web').then((m) => new m.VideoHighFpsWeb()),
+const TpaCamera = registerPlugin<TpaCameraPlugin>('TpaCamera', {
+  web: () => import('./web').then((m) => new m.TpaCameraWeb()),
 });
+
+export * from './definitions';
+export { TpaCamera };

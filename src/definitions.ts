@@ -1,35 +1,17 @@
-export interface CaptureVideoOptions {
-  /**
-   * Maximum duration in seconds (0 = unlimited)
-   */
-  duration?: number;
-
-  /**
-   * Desired frame rate, e.g., 30, 60, 120
-   */
-  frameRate?: number;
-
-  /**
-   * Max file size in bytes (e.g., 50_000_000 for 50MB)
-   */
-  sizeLimit?: number;
-
-  /**
-   * Video quality preset
-   * - 'hd' = 1280x720
-   * - 'fhd' = 1920x1080
-   * - 'uhd' = 3840x2160
-   */
-  quality?: 'hd' | 'fhd' | 'uhd';
+export interface TpaCameraPlugin {
+  startRecording(options: videoOptions): Promise<VideoRecordingResult>;
 }
 
-export interface MediaFileResult {
-  /**
-   * Absolute local file path of the recorded video
-   */
+export interface videoOptions {
+  resolution: '720p' | '1080p' | '4k';
+  fps: number;
+  sizeLimit: number;
+  slowMotion?: boolean;
+  saveToLibrary?: boolean;
+  title?: string;
+}
+
+export interface VideoRecordingResult {
   videoPath: string;
-}
-
-export interface VideoHighFpsPlugin {
-  openCamera(options: CaptureVideoOptions): Promise<MediaFileResult>;
+  duration?: number;
 }

@@ -4,7 +4,7 @@ export default {
     {
       file: 'dist/plugin.js',
       format: 'iife',
-      name: 'capacitorVideoHighFpsPlugin',
+      name: 'capacitorTpaCamera',
       globals: {
         '@capacitor/core': 'capacitorExports',
       },

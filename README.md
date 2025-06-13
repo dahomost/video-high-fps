@@ -13,7 +13,7 @@ npx cap sync
 
 <docgen-index>
 
-* [`openCamera(...)`](#opencamera)
+* [`startRecording(...)`](#startrecording)
 * [Interfaces](#interfaces)
 
 </docgen-index>
@@ -21,17 +21,17 @@ npx cap sync
 <docgen-api>
 <!--Update the source file JSDoc comments and rerun docgen to update the docs below-->
 
-### openCamera(...)
+### startRecording(...)
 
 ```typescript
-openCamera(options: CaptureVideoOptions) => Promise<MediaFileResult>
+startRecording(options: videoOptions) => Promise<VideoRecordingResult>
 ```
 
-| Param         | Type                                                                |
-| ------------- | ------------------------------------------------------------------- |
-| **`options`** | <code><a href="#capturevideooptions">CaptureVideoOptions</a></code> |
+| Param         | Type                                                  |
+| ------------- | ----------------------------------------------------- |
+| **`options`** | <code><a href="#videooptions">videoOptions</a></code> |
 
-**Returns:** <code>Promise&lt;<a href="#mediafileresult">MediaFileResult</a>&gt;</code>
+**Returns:** <code>Promise&lt;<a href="#videorecordingresult">VideoRecordingResult</a>&gt;</code>
 
 --------------------
 
@@ -39,20 +39,23 @@ openCamera(options: CaptureVideoOptions) => Promise<MediaFileResult>
 ### Interfaces
 
 
-#### MediaFileResult
+#### VideoRecordingResult
 
-| Prop            | Type                | Description                                    |
-| --------------- | ------------------- | ---------------------------------------------- |
-| **`videoPath`** | <code>string</code> | Absolute local file path of the recorded video |
+| Prop            | Type                |
+| --------------- | ------------------- |
+| **`videoPath`** | <code>string</code> |
+| **`duration`**  | <code>number</code> |
 
 
-#### CaptureVideoOptions
+#### videoOptions
 
-| Prop            | Type                                | Description                                                                    |
-| --------------- | ----------------------------------- | ------------------------------------------------------------------------------ |
-| **`duration`**  | <code>number</code>                 | Maximum duration in seconds (0 = unlimited)                                    |
-| **`frameRate`** | <code>number</code>                 | Desired frame rate, e.g., 30, 60, 120                                          |
-| **`sizeLimit`** | <code>number</code>                 | Max file size in bytes (e.g., 50_000_000 for 50MB)                             |
-| **`quality`**   | <code>'hd' \| 'fhd' \| 'uhd'</code> | Video quality preset - 'hd' = 1280x720 - 'fhd' = 1920x1080 - 'uhd' = 3840x2160 |
+| Prop                | Type                                   |
+| ------------------- | -------------------------------------- |
+| **`resolution`**    | <code>'720p' \| '1080p' \| '4k'</code> |
+| **`fps`**           | <code>number</code>                    |
+| **`sizeLimit`**     | <code>number</code>                    |
+| **`slowMotion`**    | <code>boolean</code>                   |
+| **`saveToLibrary`** | <code>boolean</code>                   |
+| **`title`**         | <code>string</code>                    |
 
 </docgen-api>

@@ -48,11 +48,11 @@ import android.annotation.SuppressLint;
 import java.util.List;
 
 // Registers the plugin and declares needed Android permissions (like CAMERA, AUDIO) so they can be requested at runtime.
-@CapacitorPlugin(name = "VideoHighFps", permissions = {
+@CapacitorPlugin(name = "TpaCamera", permissions = {
         @Permission(strings = { Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO }, alias = "camera")
 })
 
-public class VideoHighFpsPlugin extends Plugin {
+public class TpaCameraPlugin extends Plugin {
 
     // Active camera (opened via Camera2 API)
     private CameraDevice cameraDevice;
@@ -110,17 +110,17 @@ public class VideoHighFpsPlugin extends Plugin {
     private int sizeLimit;
 
     @PluginMethod
-    public void openCamera(PluginCall call) {
+    public void startRecording(PluginCall call) {
 
         // check permission
 
         if (getPermissionState("camera") != PermissionState.GRANTED) {
             requestPermissionForAlias("camera", call, "onCameraPermissionResult");
-            Log.d("VideoHighFps", "--> open camera, permission denied");
+            Log.d("TpaCamera", "--> open camera, permission denied");
             return;
         }
 
-        Log.d("VideoHighFps", "--> open camera, permission granted");
+        Log.d("TpaCamera", "--> open camera, permission granted");
 
         // get params (frameRate, quality, )
         storedCall = call;
@@ -137,9 +137,9 @@ public class VideoHighFpsPlugin extends Plugin {
             selectedSize = new Size(1280, 720); // default = hd
         }
 
-        Log.d("VideoHighFps", "--> videoFrameRate = " + videoFrameRate);
-        Log.d("VideoHighFps", "--> quality = " + quality);
-        Log.d("VideoHighFps", "--> sizeLimit = " + sizeLimit);
+        Log.d("TpaCamera", "--> videoFrameRate = " + videoFrameRate);
+        Log.d("TpaCamera", "--> quality = " + quality);
+        Log.d("TpaCamera", "--> sizeLimit = " + sizeLimit);
 
         // Init CameraManager - Android Camera system
         // Gets the current Context (usually from an Activity, Fragment, or View).
@@ -190,10 +190,10 @@ public class VideoHighFpsPlugin extends Plugin {
     @PermissionCallback
     private void onCameraPermissionResult(PluginCall call) {
         if (getPermissionState("camera") == PermissionState.GRANTED) {
-            Log.d("VideoHighFps", "--> permission granted");
+            Log.d("TpaCamera", "--> permission granted");
             openCamera(call);
         } else {
-            Log.d("VideoHighFps", "--> permission not granted");
+            Log.d("TpaCamera", "--> permission not granted");
             call.reject("Permission denied");
         }
     }
@@ -320,7 +320,7 @@ public class VideoHighFpsPlugin extends Plugin {
                         root.removeView(overlay);
                 });
             } catch (Exception e) {
-                Log.e("VideoHighFps", "Back button error: " + e.getMessage());
+                Log.e("TpaCamera", "Back button error: " + e.getMessage());
             }
         });
 
@@ -483,7 +483,7 @@ public class VideoHighFpsPlugin extends Plugin {
         Size bestSize120 = null;
         Size bestSize60 = null;
 
-        Log.d("VideoHighFps -->", "highSpeedSizes = " + Arrays.toString(highSpeedSizes));
+        Log.d("TpaCamera -->", "highSpeedSizes = " + Arrays.toString(highSpeedSizes));
 
         for (Size size : highSpeedSizes) {
             if (!previewList.contains(size))
@@ -491,10 +491,10 @@ public class VideoHighFpsPlugin extends Plugin {
 
             Range<Integer>[] fpsRanges = configMap.getHighSpeedVideoFpsRangesFor(size);
 
-            // Log.d("VideoHighFps -->", "highSpeedSizes = " + Arrays.toString(fpsRanges));
+            // Log.d("TpaCamera -->", "highSpeedSizes = " + Arrays.toString(fpsRanges));
 
             for (Range<Integer> range : fpsRanges) {
-                // Log.d("VideoHighFps", "Size " + size + " supports FPS range: " + range);
+                // Log.d("TpaCamera", "Size " + size + " supports FPS range: " + range);
                 if (range.contains(120)) {
                     if (bestSize120 == null || (size.getWidth() >= bestSize120.getWidth()
                             && size.getHeight() >= bestSize120.getHeight())) {
@@ -512,8 +512,8 @@ public class VideoHighFpsPlugin extends Plugin {
             }
         }
 
-        Log.d("VideoHighFps -->", "bestSize120 = " + bestSize120);
-        Log.d("VideoHighFps -->", "bestSize60 = " + bestSize60);
+        Log.d("TpaCamera -->", "bestSize120 = " + bestSize120);
+        Log.d("TpaCamera -->", "bestSize60 = " + bestSize60);
 
         // force recording at 60fps
         boolean useHighSpeedSession = false;
@@ -522,13 +522,13 @@ public class VideoHighFpsPlugin extends Plugin {
             selectedSize = bestSize120;
             videoFrameRate = 120;
             useHighSpeedSession = true;
-            Log.d("VideoHighFps", "Using size for 120fps: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
+            Log.d("TpaCamera", "Using size for 120fps: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
         } else if (videoFrameRate == 60 && bestSize60 != null) {
             selectedSize = bestSize60;
             videoFrameRate = 60;
             // 👇 do NOT use high-speed session for 60fps (avoid preview crash)
             useHighSpeedSession = false;
-            Log.d("VideoHighFps",
+            Log.d("TpaCamera",
                     "Using 60fps (non-high-speed): " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
         } else {
             // Fallback to standard session with 30 FPS
@@ -540,7 +540,7 @@ public class VideoHighFpsPlugin extends Plugin {
                     break;
                 }
             }
-            Log.d("VideoHighFps", "High-speed not supported, using standard 30fps: " + selectedSize.getWidth() + "x"
+            Log.d("TpaCamera", "High-speed not supported, using standard 30fps: " + selectedSize.getWidth() + "x"
                     + selectedSize.getHeight());
         }
 
@@ -639,7 +639,7 @@ public class VideoHighFpsPlugin extends Plugin {
             ret.put("quality", selectedSize);
             ret.put("sizeLimit", sizeLimit);
 
-            Log.d("VideoHighFps", "--> return : " + ret.toString(2));
+            Log.d("TpaCamera", "--> return : " + ret.toString(2));
 
             storedCall.resolve(ret);
         } catch (Exception e) {
