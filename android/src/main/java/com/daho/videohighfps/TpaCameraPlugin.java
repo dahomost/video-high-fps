@@ -43,9 +43,11 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
 import android.graphics.Matrix;
-import android.graphics.RectF;
+
 import android.annotation.SuppressLint;
 import java.util.List;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 // Registers the plugin and declares needed Android permissions (like CAMERA, AUDIO) so they can be requested at runtime.
 @CapacitorPlugin(name = "TpaCamera", permissions = {
@@ -125,16 +127,16 @@ public class TpaCameraPlugin extends Plugin {
         // get params (frameRate, quality, )
         storedCall = call;
 
-        this.videoFrameRate = call.getInt("frameRate", 120); // default 120
+        this.videoFrameRate = call.getInt("fps", 240); // default 240
         this.sizeLimit = call.getInt("sizeLimit", 0); // 0 = unlimited (default)
-        String quality = call.getString("quality", "hd"); // default = hd
+        String quality = call.getString("resolution", "4k"); // default = 4k
 
-        if ("uhd".equalsIgnoreCase(quality)) {
+        if ("4k".equalsIgnoreCase(quality)) {
             selectedSize = new Size(3840, 2160);
-        } else if ("fhd".equalsIgnoreCase(quality)) {
+        } else if ("1080p".equalsIgnoreCase(quality)) {
             selectedSize = new Size(1920, 1080);
         } else {
-            selectedSize = new Size(1280, 720); // default = hd
+            selectedSize = new Size(1280, 720); // default = 720p
         }
 
         Log.d("TpaCamera", "--> videoFrameRate = " + videoFrameRate);
@@ -191,7 +193,7 @@ public class TpaCameraPlugin extends Plugin {
     private void onCameraPermissionResult(PluginCall call) {
         if (getPermissionState("camera") == PermissionState.GRANTED) {
             Log.d("TpaCamera", "--> permission granted");
-            openCamera(call);
+            startRecording(call);
         } else {
             Log.d("TpaCamera", "--> permission not granted");
             call.reject("Permission denied");
@@ -430,6 +432,7 @@ public class TpaCameraPlugin extends Plugin {
 
     // Verify setupMediaRecorder uses videoFrameRate (no change needed if already
     // correct)
+    // Automatically adjust video bitrate based on resolution and fps
     private void setupMediaRecorder() throws Exception {
         File outputDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES);
         String fileName = "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".mp4";
@@ -440,13 +443,29 @@ public class TpaCameraPlugin extends Plugin {
         mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
         mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
         mediaRecorder.setOutputFile(videoPath);
-        mediaRecorder.setVideoFrameRate(videoFrameRate); // Use chosen FPS
+        mediaRecorder.setVideoFrameRate(videoFrameRate);
         mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
         mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-        mediaRecorder.setVideoEncodingBitRate(15_000_000);
+
+        int pixels = selectedSize.getWidth() * selectedSize.getHeight();
+        int bitrate;
+
+        // Heuristic bitrate calculation based on resolution and fps
+        if (pixels >= 3840 * 2160) { // 4K
+            bitrate = videoFrameRate >= 240 ? 40_000_000 : 30_000_000;
+        } else if (pixels >= 1920 * 1080) { // Full HD
+            bitrate = videoFrameRate >= 240 ? 30_000_000 : 20_000_000;
+        } else if (pixels >= 1280 * 720) { // HD
+            bitrate = videoFrameRate >= 240 ? 20_000_000 : 10_000_000;
+        } else {
+            bitrate = 8_000_000;
+        }
+
+        mediaRecorder.setVideoEncodingBitRate(bitrate);
+        Log.d("TpaCamera", "--> Bitrate selected: " + bitrate);
+
         mediaRecorder.setVideoSize(selectedSize.getWidth(), selectedSize.getHeight());
 
-        // ✅ Set file size limit after initialization
         if (sizeLimit > 0) {
             mediaRecorder.setMaxFileSize(sizeLimit);
         }
@@ -471,7 +490,15 @@ public class TpaCameraPlugin extends Plugin {
         Thread.sleep(500);
     }
 
+    // opens the camera and starts the session.
+    // throw a CameraAccessException if accessing the camera fails.
     private void startCaptureSession() throws Exception {
+        // Log the original input params for debugging
+        Log.d("TpaCamera", "-- Input Params --");
+        Log.d("TpaCamera", "Requested Frame Rate: " + videoFrameRate);
+        Log.d("TpaCamera", "Preferred Resolution: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
+        Log.d("TpaCamera", "Max File Size Limit: " + sizeLimit);
+
         CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
         StreamConfigurationMap configMap = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
         assert configMap != null;
@@ -480,75 +507,74 @@ public class TpaCameraPlugin extends Plugin {
         Size[] previewSizes = configMap.getOutputSizes(SurfaceTexture.class);
         List<Size> previewList = Arrays.asList(previewSizes);
 
-        Size bestSize120 = null;
-        Size bestSize60 = null;
-
-        Log.d("TpaCamera -->", "highSpeedSizes = " + Arrays.toString(highSpeedSizes));
-
+        Log.d("TpaCamera", "-- Device High Speed Capabilities --");
         for (Size size : highSpeedSizes) {
-            if (!previewList.contains(size))
-                continue; // Skip sizes that can't be previewed
-
             Range<Integer>[] fpsRanges = configMap.getHighSpeedVideoFpsRangesFor(size);
-
-            // Log.d("TpaCamera -->", "highSpeedSizes = " + Arrays.toString(fpsRanges));
-
             for (Range<Integer> range : fpsRanges) {
-                // Log.d("TpaCamera", "Size " + size + " supports FPS range: " + range);
-                if (range.contains(120)) {
-                    if (bestSize120 == null || (size.getWidth() >= bestSize120.getWidth()
-                            && size.getHeight() >= bestSize120.getHeight())) {
-                        bestSize120 = size;
-                    }
-                }
-
-                if (range.contains(60)) {
-                    if (bestSize60 == null || (size.getWidth() >= bestSize60.getWidth()
-                            && size.getHeight() >= bestSize60.getHeight())) {
-                        bestSize60 = size;
-                    }
-                }
-
+                Log.d("TpaCamera",
+                        "Supports size: " + size.getWidth() + "x" + size.getHeight() + " with FPS range: " + range);
             }
         }
 
-        Log.d("TpaCamera -->", "bestSize120 = " + bestSize120);
-        Log.d("TpaCamera -->", "bestSize60 = " + bestSize60);
+        Size bestSize = null;
+        int bestFps = 0;
 
-        // force recording at 60fps
-        boolean useHighSpeedSession = false;
+        Set<Integer> uniqueFps = new LinkedHashSet<>(Arrays.asList(videoFrameRate, 240, 120, 60, 30));
 
-        if (videoFrameRate == 120 && bestSize120 != null) {
-            selectedSize = bestSize120;
-            videoFrameRate = 120;
-            useHighSpeedSession = true;
-            Log.d("TpaCamera", "Using size for 120fps: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
-        } else if (videoFrameRate == 60 && bestSize60 != null) {
-            selectedSize = bestSize60;
-            videoFrameRate = 60;
-            // 👇 do NOT use high-speed session for 60fps (avoid preview crash)
-            useHighSpeedSession = false;
-            Log.d("TpaCamera",
-                    "Using 60fps (non-high-speed): " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
-        } else {
-            // Fallback to standard session with 30 FPS
-            videoFrameRate = 30;
-            Size[] fallbackSizes = configMap.getOutputSizes(MediaRecorder.class);
-            for (Size size : fallbackSizes) {
-                if (size.getWidth() >= selectedSize.getWidth() && size.getHeight() >= selectedSize.getHeight()) {
-                    selectedSize = size;
-                    break;
+        int[] targetFpsOptions = new int[uniqueFps.size()];
+        int index = 0;
+        for (Integer val : uniqueFps) {
+            targetFpsOptions[index++] = val;
+        }
+
+        for (int targetFps : targetFpsOptions) {
+            for (Size size : highSpeedSizes) {
+                if (!previewList.contains(size))
+                    continue;
+                Range<Integer>[] fpsRanges = configMap.getHighSpeedVideoFpsRangesFor(size);
+                for (Range<Integer> range : fpsRanges) {
+                    if (range.contains(targetFps)) {
+                        if (bestSize == null || isHigherFpsOrResolution(targetFps, size, bestFps, bestSize)) {
+                            bestSize = size;
+                            bestFps = targetFps;
+                            Log.d("TpaCamera", "--> Matched FPS: " + targetFps + " @ Resolution: " + size.getWidth()
+                                    + "x" + size.getHeight());
+                        }
+                    }
                 }
             }
-            Log.d("TpaCamera", "High-speed not supported, using standard 30fps: " + selectedSize.getWidth() + "x"
-                    + selectedSize.getHeight());
+        }
+
+        boolean useHighSpeedSession = false;
+
+        if (bestSize != null) {
+            selectedSize = bestSize;
+            videoFrameRate = bestFps;
+            useHighSpeedSession = videoFrameRate >= 120;
+            Log.d("TpaCamera", "--> FINAL SELECTED (Recording): " + videoFrameRate + "fps @ " + selectedSize.getWidth()
+                    + "x" + selectedSize.getHeight());
+        } else {
+            videoFrameRate = 30;
+            Size[] fallbackSizes = configMap.getOutputSizes(MediaRecorder.class);
+            selectedSize = fallbackSizes.length > 0 ? fallbackSizes[0] : new Size(1280, 720);
+            Log.d("TpaCamera", "--> FALLBACK: 30fps @ " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
         }
 
         if (textureView != null && textureView.isAvailable()) {
             SurfaceTexture surfaceTexture = textureView.getSurfaceTexture();
             if (surfaceTexture != null) {
                 surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
+                configureTransformCrop(textureView.getWidth(), textureView.getHeight());
+                Log.d("TpaCamera", "--> PREVIEW SETUP: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
             }
+        }
+
+        Integer lightLevel = characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) != null
+                ? characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE).getLower()
+                : null;
+        if (lightLevel != null && lightLevel < 100) {
+            Log.w("TpaCamera",
+                    "⚠️ Low light environment detected – consider improving lighting for better 240fps results.");
         }
 
         setupMediaRecorder();
@@ -571,8 +597,12 @@ public class TpaCameraPlugin extends Plugin {
                                 builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
                                 builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                                         new Range<>(videoFrameRate, videoFrameRate));
-                                hsSession.setRepeatingBurst(hsSession.createHighSpeedRequestList(builder.build()), null,
-                                        backgroundHandler);
+
+                                Log.d("TpaCamera", "--> PREVIEW STARTED @ " + selectedSize.getWidth() + "x"
+                                        + selectedSize.getHeight() + " @ " + videoFrameRate + "fps");
+
+                                hsSession.setRepeatingBurst(
+                                        hsSession.createHighSpeedRequestList(builder.build()), null, backgroundHandler);
                             } catch (Exception e) {
                                 storedCall.reject("Capture failed: " + e.getMessage());
                             }
@@ -599,6 +629,10 @@ public class TpaCameraPlugin extends Plugin {
                                 builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
                                 builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                                         new Range<>(videoFrameRate, videoFrameRate));
+
+                                Log.d("TpaCamera", "--> PREVIEW STARTED @ " + selectedSize.getWidth() + "x"
+                                        + selectedSize.getHeight() + " @ " + videoFrameRate + "fps");
+
                                 session.setRepeatingRequest(builder.build(), null, backgroundHandler);
                             } catch (Exception e) {
                                 storedCall.reject("Capture failed: " + e.getMessage());
@@ -609,11 +643,25 @@ public class TpaCameraPlugin extends Plugin {
                         public void onConfigureFailed(@NonNull CameraCaptureSession session) {
                             storedCall.reject("Standard configuration failed");
                         }
-                    }, backgroundHandler);
+                    },
+                    backgroundHandler);
         }
     }
 
-    // Update stopNativeRecording to include frame rate in response
+    // Prefer higher fps first, then resolution if fps are equal
+    private boolean isHigherFpsOrResolution(int newFps, Size newSize, int currentFps, Size currentSize) {
+        if (newFps > currentFps) {
+            return true;
+        } else if (newFps == currentFps) {
+            int newPixels = newSize.getWidth() * newSize.getHeight();
+            int currentPixels = currentSize.getWidth() * currentSize.getHeight();
+            return newPixels > currentPixels;
+        }
+        return false;
+    }
+
+    // Update stopNativeRecording to include frame rate, resolution, and duration in
+    // response
     private void stopNativeRecording() {
         try {
             if (mediaRecorder != null) {
@@ -633,10 +681,14 @@ public class TpaCameraPlugin extends Plugin {
                     root.removeView(overlay);
             });
 
+            long durationMillis = SystemClock.elapsedRealtime() - startTime;
+            float durationSeconds = durationMillis / 1000f;
+
             JSObject ret = new JSObject();
             ret.put("videoPath", videoPath);
             ret.put("frameRate", videoFrameRate);
-            ret.put("quality", selectedSize);
+            ret.put("resolution", selectedSize.getWidth() + "x" + selectedSize.getHeight());
+            ret.put("duration", durationSeconds);
             ret.put("sizeLimit", sizeLimit);
 
             Log.d("TpaCamera", "--> return : " + ret.toString(2));
@@ -647,19 +699,77 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
+    // Fix distorted preview scaling to preserve aspect ratio using fit-center
+    // transform
     private void configureTransform(int viewWidth, int viewHeight) {
         if (textureView == null || selectedSize == null)
             return;
 
+        float previewWidth = selectedSize.getWidth();
+        float previewHeight = selectedSize.getHeight();
+        float viewRatio = (float) viewWidth / viewHeight;
+        float previewRatio = previewWidth / previewHeight;
+
+        float scale;
+        float dx = 0f, dy = 0f;
+
+        if (previewRatio > viewRatio) {
+            scale = (float) viewWidth / previewWidth;
+            dy = (viewHeight - previewHeight * scale) / 2f;
+        } else {
+            scale = (float) viewHeight / previewHeight;
+            dx = (viewWidth - previewWidth * scale) / 2f;
+        }
+
         Matrix matrix = new Matrix();
-        float scaleX = (float) viewWidth / selectedSize.getWidth();
-        float scaleY = (float) viewHeight / selectedSize.getHeight();
-        float scale = Math.max(scaleX, scaleY);
+        matrix.setScale(scale, scale);
+        matrix.postTranslate(dx, dy);
 
-        float centerX = viewWidth / 2f;
-        float centerY = viewHeight / 2f;
-
-        matrix.setScale(scale, scale, centerX, centerY);
         textureView.setTransform(matrix);
+        Log.d("TpaCamera", "Fixed preview transform (fit center) scale=" + scale + ", dx=" + dx + ", dy=" + dy);
     }
+
+    // Helper method to compare resolution quality against preferred resolution
+    // Returns true if the candidate resolution is better (closer to preferred or
+    // larger)
+    private boolean isBetterMatch(Size candidate, Size currentBest, Size preferred) {
+        if (currentBest == null)
+            return true;
+
+        int candidatePixels = candidate.getWidth() * candidate.getHeight();
+        int currentPixels = currentBest.getWidth() * currentBest.getHeight();
+        int preferredPixels = preferred.getWidth() * preferred.getHeight();
+
+        // Prefer closer to preferred size (e.g. 4K), not smaller
+        int candidateDiff = Math.abs(candidatePixels - preferredPixels);
+        int currentDiff = Math.abs(currentPixels - preferredPixels);
+
+        return candidatePixels >= preferredPixels && candidateDiff < currentDiff;
+    }
+
+    // Apply center-crop scaling to ensure full screen without stretching.
+    private void configureTransformCrop(int viewWidth, int viewHeight) {
+        if (textureView == null || selectedSize == null)
+            return;
+
+        float previewWidth = selectedSize.getWidth();
+        float previewHeight = selectedSize.getHeight();
+        float viewRatio = (float) viewWidth / viewHeight;
+        float previewRatio = previewWidth / previewHeight;
+
+        float scaleX, scaleY;
+        if (previewRatio > viewRatio) {
+            scaleX = previewRatio / viewRatio;
+            scaleY = 1f;
+        } else {
+            scaleY = viewRatio / previewRatio;
+            scaleX = 1f;
+        }
+
+        Matrix matrix = new Matrix();
+        matrix.setScale(scaleX, scaleY, viewWidth / 2f, viewHeight / 2f);
+        textureView.setTransform(matrix);
+        Log.d("TpaCamera", "Preview transform (center-crop): scaleX=" + scaleX + ", scaleY=" + scaleY);
+    }
+
 }
