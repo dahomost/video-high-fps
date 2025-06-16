@@ -739,21 +739,23 @@ public class TpaCameraPlugin extends Plugin {
     }
 
     private void setupMediaRecorder() throws IOException {
-        Log.d(TAG, "Initializing MediaRecorder...");
+        Log.d(TAG, "Initializing MediaRecorder (direct file save)...");
 
-        ContentValues values = new ContentValues();
-        String fileName = "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".mp4";
-        values.put(MediaStore.Video.Media.DISPLAY_NAME, fileName);
-        values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
-        values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES);
-
-        Uri uri = getContext().getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
-        if (uri == null) {
-            throw new IOException("Failed to create media store entry");
+        // 1. Define external app-specific movies directory
+        File movieDir = new File(getContext().getExternalFilesDir(Environment.DIRECTORY_MOVIES), "recordings");
+        if (!movieDir.exists()) {
+            boolean created = movieDir.mkdirs();
+            Log.d(TAG, "Created movie dir: " + created);
         }
-        videoPath = uri.toString(); // Store URI for reference
-        Log.d(TAG, "Output URI: " + videoPath);
 
+        // 2. Define the full file path
+        String fileName = "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".mp4";
+        File videoFile = new File(movieDir, fileName);
+        videoPath = "file://" + videoFile.getAbsolutePath(); // Save for frontend
+
+        Log.d(TAG, "Saving to: " + videoPath);
+
+        // 3. Set up MediaRecorder
         mediaRecorder = new MediaRecorder();
         mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
         mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
@@ -765,18 +767,16 @@ public class TpaCameraPlugin extends Plugin {
         mediaRecorder.setVideoEncodingBitRate(bitrate);
         mediaRecorder.setVideoFrameRate(videoFrameRate);
         mediaRecorder.setVideoSize(selectedSize.getWidth(), selectedSize.getHeight());
-        Log.d(TAG, "Recorder config: " + selectedSize.getWidth() + "x" + selectedSize.getHeight() +
-                " @ " + videoFrameRate + "fps, bitrate=" + bitrate);
 
-        mediaRecorder.setOutputFile(getContext().getContentResolver().openFileDescriptor(uri, "w").getFileDescriptor());
+        mediaRecorder.setOutputFile(videoFile.getAbsolutePath());
 
         Activity activity = getActivity();
         if (activity != null) {
             Display display = activity.getWindowManager().getDefaultDisplay();
             int rotation = display.getRotation();
-            int orientation = rotation == Surface.ROTATION_0 || rotation == Surface.ROTATION_180 ? 90 : 0;
+            int orientation = (rotation == Surface.ROTATION_0 || rotation == Surface.ROTATION_180) ? 90 : 0;
             mediaRecorder.setOrientationHint(orientation);
-            Log.d(TAG, "Orientation hint set to " + orientation + "° based on display rotation");
+            Log.d(TAG, "Orientation hint set to " + orientation + "°");
         }
 
         if (sizeLimit > 0) {
