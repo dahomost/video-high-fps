@@ -132,7 +132,7 @@ public class TpaCameraPlugin extends Plugin {
             selectOptimalConfiguration(quality);
             startBackgroundThread();
 
-            // ✅ Hide WebView before showing camera
+            // -> Hide WebView before showing camera
             getActivity().runOnUiThread(() -> {
                 try {
                     View webView = getBridge().getWebView();
@@ -525,7 +525,7 @@ public class TpaCameraPlugin extends Plugin {
                     hsSession.setRepeatingBurst(hsSession.createHighSpeedRequestList(builder.build()), null,
                             backgroundHandler);
 
-                    // ✅ Fix orientation after preview is fully active
+                    // -> Fix orientation after preview is fully active
                     textureView.post(() -> {
                         configureTransform(textureView.getWidth(), textureView.getHeight());
                     });
@@ -660,7 +660,7 @@ public class TpaCameraPlugin extends Plugin {
                             Log.d(TAG, "Overlay removed");
                         }
 
-                        // ✅ Restore WebView
+                        // -> Restore WebView
                         View webView = getBridge().getWebView();
                         if (webView != null) {
                             webView.setVisibility(View.VISIBLE);
