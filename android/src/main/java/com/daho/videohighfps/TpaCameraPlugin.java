@@ -58,6 +58,8 @@ import android.graphics.Rect;
 import android.content.ContentValues;
 import android.net.Uri;
 import android.provider.MediaStore;
+import android.os.ParcelFileDescriptor;
+import android.media.MediaScannerConnection;
 
 @CapacitorPlugin(name = "TpaCamera", permissions = {
         @Permission(strings = {
@@ -331,7 +333,7 @@ public class TpaCameraPlugin extends Plugin {
         recordButton = createStyledButton("🔴");
         pauseButton = createStyledButton("❘ ❘");
         stopButton = createStyledButton("■");
-        backButton = createStyledButton("❌");
+        backButton = createStyledButton("");
 
         timerView = new TextView(activity);
         timerView.setText("00:00");
@@ -739,23 +741,25 @@ public class TpaCameraPlugin extends Plugin {
     }
 
     private void setupMediaRecorder() throws IOException {
-        Log.d(TAG, "Initializing MediaRecorder (direct file save)...");
+        Log.d(TAG, "Initializing MediaRecorder using MediaStore in Movies/recordings...");
 
-        // 1. Define external app-specific movies directory
-        File movieDir = new File(getContext().getExternalFilesDir(Environment.DIRECTORY_MOVIES), "recordings");
-        if (!movieDir.exists()) {
-            boolean created = movieDir.mkdirs();
-            Log.d(TAG, "Created movie dir: " + created);
+        // Define file metadata
+        String fileName = "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".mp4";
+
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Video.Media.DISPLAY_NAME, fileName);
+        values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
+        values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/recordings");
+
+        Uri uri = getContext().getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+        if (uri == null) {
+            throw new IOException("❌ Failed to create MediaStore entry");
         }
 
-        // 2. Define the full file path
-        String fileName = "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".mp4";
-        File videoFile = new File(movieDir, fileName);
-        videoPath = "file://" + videoFile.getAbsolutePath(); // Save for frontend
-
+        videoPath = uri.toString(); // Save URI for frontend
         Log.d(TAG, "Saving to: " + videoPath);
 
-        // 3. Set up MediaRecorder
+        // Set up MediaRecorder
         mediaRecorder = new MediaRecorder();
         mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
         mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
@@ -768,7 +772,8 @@ public class TpaCameraPlugin extends Plugin {
         mediaRecorder.setVideoFrameRate(videoFrameRate);
         mediaRecorder.setVideoSize(selectedSize.getWidth(), selectedSize.getHeight());
 
-        mediaRecorder.setOutputFile(videoFile.getAbsolutePath());
+        // Use the file descriptor from MediaStore URI
+        mediaRecorder.setOutputFile(getContext().getContentResolver().openFileDescriptor(uri, "w").getFileDescriptor());
 
         Activity activity = getActivity();
         if (activity != null) {
@@ -799,7 +804,7 @@ public class TpaCameraPlugin extends Plugin {
         });
 
         mediaRecorder.prepare();
-        Log.d(TAG, "MediaRecorder prepared successfully.");
+        Log.d(TAG, " MediaRecorder prepared with MediaStore output.");
     }
 
     private void startRecordingInternal() {
@@ -837,25 +842,43 @@ public class TpaCameraPlugin extends Plugin {
             if (mediaRecorder != null) {
                 mediaRecorder.stop();
             }
+
             long durationMillis = SystemClock.elapsedRealtime() - startTime;
+            float durationSec = durationMillis / 1000f;
+
+            // Reject if duration too short
+            if (durationSec < 0.5f) {
+                Log.w(TAG, "❌ Recording too short or failed, deleting: " + videoPath);
+                deleteVideoFromMediaStore(videoPath);
+                storedCall.reject("Recording too short or failed");
+                return;
+            }
 
             JSObject result = new JSObject();
-            result.put("videoPath", videoPath); // URI string
+            result.put("videoPath", videoPath);
             result.put("frameRate", videoFrameRate);
             result.put("resolution", selectedSize.getWidth() + "x" + selectedSize.getHeight());
-            result.put("duration", durationMillis / 1000f);
+            result.put("duration", durationSec);
             result.put("sizeLimit", sizeLimit);
 
-            // LOG RETURNED RESULT JSON
-            Log.d(TAG, "[stopRecording] Result JSON:");
-            Log.d(TAG, result.toString());
-
+            Log.d(TAG, "[stopRecording] Result JSON:\n" + result.toString(2));
             storedCall.resolve(result);
+
         } catch (Exception e) {
             Log.e(TAG, "Failed to stop recording", e);
             storedCall.reject("Failed to stop recording: " + e.getMessage());
         } finally {
             cleanupResources();
+        }
+    }
+
+    private void deleteVideoFromMediaStore(String uriString) {
+        try {
+            Uri uri = Uri.parse(uriString);
+            int deleted = getContext().getContentResolver().delete(uri, null, null);
+            Log.w(TAG, "Deleted invalid video, count=" + deleted);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to delete invalid video", e);
         }
     }
 
