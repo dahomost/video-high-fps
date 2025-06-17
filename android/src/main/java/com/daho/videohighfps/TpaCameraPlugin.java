@@ -58,7 +58,6 @@ import android.graphics.Rect;
         @Permission(strings = {
                 Manifest.permission.CAMERA,
                 Manifest.permission.RECORD_AUDIO,
-        // Manifest.permission.WRITE_EXTERNAL_STORAGE
         }, alias = "camera")
 })
 
@@ -84,7 +83,8 @@ public class TpaCameraPlugin extends Plugin {
     private Size selectedSize;
     private String selectedCameraId;
     private int videoFrameRate;
-    private int sizeLimit;
+    private long sizeLimit;
+
     private View blackPlaceholder;
 
     private final Handler timerHandler = new Handler();
@@ -103,54 +103,69 @@ public class TpaCameraPlugin extends Plugin {
     @PluginMethod
     public void startRecording(PluginCall call) {
         Log.d(TAG, "-> startRecording(PluginCall call) is called . . . . . . . .");
+
+        this.storedCall = call;
+        this.cameraManager = (CameraManager) getContext().getSystemService(Context.CAMERA_SERVICE);
+
+        if (getPermissionState("camera") != PermissionState.GRANTED) {
+            requestPermissionForAlias("camera", call, "onCameraPermissionResult");
+            return;
+        }
+
+        Log.d(TAG, "  startRecording -> Permission granted...");
+
+        // Read and log incoming options
+        this.videoFrameRate = call.getInt("fps", 240);
+        String resolution = call.getString("resolution", "fhd");
+        this.sizeLimit = call.getLong("sizeLimit", 0L);
+
+        Log.d(TAG, "[startRecording] Params:");
+        Log.d(TAG, " - fps: " + videoFrameRate);
+        Log.d(TAG, " - sizeLimit: " + sizeLimit);
+        Log.d(TAG, " - resolution: " + resolution);
+
         try {
-            // Step 1: Check Capacitor permissions for camera/audio/storage
-            if (getPermissionState("camera") != PermissionState.GRANTED) {
-                Log.d(TAG, " startRecording -> getPermissionState...");
-                requestPermissionForAlias("camera", call, "onCameraPermissionResult");
-                return;
-            } else {
-                Log.d(TAG, " startRecording -> Permission granted...");
-            }
+            // Automatically select best supported configuration
+            this.selectedCameraId = getPreferredCameraId();
+            selectOptimalConfiguration(resolution, videoFrameRate);
 
-            // Step 3: plugin call parameters
-            storedCall = call;
-
-            videoFrameRate = call.getInt("fps", 240); // Default to 240fps
-            sizeLimit = call.getInt("sizeLimit", 0);
-            String quality = call.getString("resolution", "1080p");
-
-            Log.d(TAG, "[startRecording] Params:");
-            Log.d(TAG, " - fps: " + videoFrameRate);
-            Log.d(TAG, " - sizeLimit: " + sizeLimit);
-            Log.d(TAG, " - resolution: " + quality);
-
-            Context context = getContext();
-            cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
-
-            selectedCameraId = getPreferredCameraId();
-            selectOptimalConfiguration(quality);
-            startBackgroundThread();
-
-            // Hide WebView before launching camera
+            // 🔧 Move preview setup to UI thread to prevent crash
             getActivity().runOnUiThread(() -> {
                 try {
+                    showCameraPreview(); // creates textureView, overlay
+
+                    // Hide Ionic WebView manually
                     View webView = getBridge().getWebView();
                     if (webView != null) {
                         webView.setVisibility(View.GONE);
                         Log.d(TAG, "WebView hidden for full-screen native recording");
                     }
                 } catch (Exception e) {
-                    Log.e(TAG, "Failed to hide WebView", e);
+                    Log.e(TAG, "Failed to show camera preview", e);
+                    storedCall.reject("Failed to show camera preview: " + e.getMessage());
                 }
             });
 
-            showCameraPreview();
+            Log.d(TAG, "Initializing MediaRecorder with direct file path......");
+            setupMediaRecorder(); // set outputFile, orientation, etc.
 
         } catch (Exception e) {
             Log.e(TAG, "Failed to start recording", e);
-            call.reject("Failed to start recording: " + e.getMessage());
             cleanupResources();
+            call.reject("Failed to start recording: " + e.getMessage());
+
+            // Restore Ionic WebView manually
+            getActivity().runOnUiThread(() -> {
+                try {
+                    View webView = getBridge().getWebView();
+                    if (webView != null) {
+                        webView.setVisibility(View.VISIBLE);
+                        Log.d(TAG, "WebView restored after error");
+                    }
+                } catch (Exception ex) {
+                    Log.e(TAG, "Failed to restore WebView", ex);
+                }
+            });
         }
     }
 
@@ -177,80 +192,89 @@ public class TpaCameraPlugin extends Plugin {
         return cameraIds[0];
     }
 
-    private void selectOptimalConfiguration(String quality) throws CameraAccessException {
+    private void selectOptimalConfiguration(String resolution, int requestedFps) throws CameraAccessException {
         CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
         StreamConfigurationMap configMap = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
         if (configMap == null) {
-            throw new CameraAccessException(CameraAccessException.CAMERA_ERROR, "Camera configuration not available");
+            throw new IllegalStateException("Cannot access camera configuration");
         }
 
-        // Define target resolutions based on quality
-        Size[] targetSizes;
-        switch (quality.toLowerCase()) {
+        Size[] availableSizes = configMap.getOutputSizes(MediaRecorder.class);
+        Range<Integer>[] highSpeedRanges;
+
+        // Define preferred sizes based on input
+        Size preferredSize;
+        switch (resolution) {
+            case "uhd":
             case "4k":
-                targetSizes = new Size[] { new Size(3840, 2160), new Size(1920, 1080), new Size(1280, 720) };
+                preferredSize = new Size(3840, 2160);
                 break;
+            case "fhd":
             case "1080p":
-                targetSizes = new Size[] { new Size(1920, 1080), new Size(1280, 720) };
+                preferredSize = new Size(1920, 1080);
                 break;
+            case "hd":
+            case "720p":
             default:
-                targetSizes = new Size[] { new Size(1280, 720) };
+                preferredSize = new Size(1280, 720);
                 break;
         }
 
-        // Get supported high-speed sizes if requested FPS is high
-        Size[] highSpeedSizes = (videoFrameRate >= 120) ? configMap.getHighSpeedVideoSizes() : null;
-        List<Size> supportedSizes = new ArrayList<>();
-        if (highSpeedSizes != null && highSpeedSizes.length > 0) {
-            supportedSizes.addAll(Arrays.asList(highSpeedSizes));
-        } else {
-            supportedSizes.addAll(Arrays.asList(configMap.getOutputSizes(MediaRecorder.class)));
-        }
+        // Try to use high-speed mode (≥120fps)
+        boolean useHighSpeed = requestedFps > 60;
 
-        // Filter sizes that match target resolutions
-        Size bestSize = null;
-        int bestFps = 0;
-        int[] targetFpsOptions = { videoFrameRate, 120, 60, 30 }; // Try requested FPS, then fall back
+        // Fallback logic
+        selectedSize = null;
+        videoFrameRate = 30;
 
-        for (Size size : supportedSizes) {
-            for (Size targetSize : targetSizes) {
-                if (size.getWidth() == targetSize.getWidth() && size.getHeight() == targetSize.getHeight()) {
-                    Range<Integer>[] fpsRanges = configMap.getHighSpeedVideoFpsRangesFor(size);
-                    if (fpsRanges == null || fpsRanges.length == 0) {
-                        fpsRanges = new Range[] { new Range<>(30, 30) }; // Fallback for standard mode
+        if (useHighSpeed) {
+            try {
+                highSpeedRanges = configMap.getHighSpeedVideoFpsRangesFor(preferredSize);
+                for (Range<Integer> range : highSpeedRanges) {
+                    if (range.getLower() <= requestedFps && range.getUpper() >= requestedFps) {
+                        selectedSize = preferredSize;
+                        videoFrameRate = requestedFps;
+                        Log.d(TAG, "Using high-speed mode: " + selectedSize + " @" + videoFrameRate + "fps");
+                        return;
                     }
-                    for (Range<Integer> fpsRange : fpsRanges) {
-                        for (int targetFps : targetFpsOptions) {
-                            if (fpsRange.contains(targetFps)) {
-                                if (bestSize == null || targetFps > bestFps ||
-                                        (targetFps == bestFps && size.getWidth()
-                                                * size.getHeight() > bestSize.getWidth() * bestSize.getHeight())) {
-                                    bestSize = size;
-                                    bestFps = targetFps;
-                                }
-                            }
-                        }
+                }
+            } catch (IllegalArgumentException e) {
+                Log.w(TAG, "Requested size not valid for high-speed: " + preferredSize);
+            }
+
+            // Fallback to supported high-speed sizes
+            for (Size size : configMap.getHighSpeedVideoSizes()) {
+                highSpeedRanges = configMap.getHighSpeedVideoFpsRangesFor(size);
+                for (Range<Integer> range : highSpeedRanges) {
+                    int maxFps = range.getUpper();
+                    if (maxFps >= 120) {
+                        selectedSize = size;
+                        videoFrameRate = Math.min(requestedFps, maxFps);
+                        Log.w(TAG, "Fallback to high-speed: " + selectedSize + " @" + videoFrameRate + "fps");
+                        return;
                     }
                 }
             }
+
+            Log.w(TAG, "No high-speed mode supported, falling back to standard recording.");
         }
 
-        if (bestSize == null) {
-            bestSize = new Size(1280, 720);
-            bestFps = 30;
-            Log.w(TAG, "No matching configuration found, using fallback: 1280x720 @ 30fps");
+        // Standard fallback mode (≤60fps)
+        int bestArea = 0;
+        for (Size size : availableSizes) {
+            int area = size.getWidth() * size.getHeight();
+            if (area > bestArea && size.getWidth() <= preferredSize.getWidth()) {
+                selectedSize = size;
+                bestArea = area;
+            }
         }
 
-        selectedSize = bestSize;
-        videoFrameRate = bestFps;
-        Log.d(TAG, "Selected configuration: " + selectedSize.getWidth() + "x" + selectedSize.getHeight() + " @ "
-                + videoFrameRate + "fps");
-
-        // Ensure portrait orientation only if not high-speed (high-speed prefers native
-        // orientation)
-        if (videoFrameRate < 120 && selectedSize.getWidth() > selectedSize.getHeight()) {
-            selectedSize = new Size(selectedSize.getHeight(), selectedSize.getWidth());
+        if (selectedSize == null) {
+            selectedSize = availableSizes[0]; // last resort fallback
         }
+
+        videoFrameRate = Math.min(requestedFps, 60); // cap to 60fps in standard mode
+        Log.w(TAG, "Using standard mode fallback: " + selectedSize + " @" + videoFrameRate + "fps");
     }
 
     private void startBackgroundThread() {
