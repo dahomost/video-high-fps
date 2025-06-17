@@ -1,0 +1,4 @@
+<!-- File: res/values/strings.xml -->
+<resources>
+    <string name="app_name">TPA Camera Plugin</string>
+</resources>

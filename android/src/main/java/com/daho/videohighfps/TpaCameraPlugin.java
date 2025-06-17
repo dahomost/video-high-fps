@@ -1,13 +1,14 @@
 package com.daho.videohighfps;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
-import android.graphics.drawable.GradientDrawable;
 import android.hardware.camera2.*;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.MediaRecorder;
@@ -16,7 +17,6 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.SystemClock;
-import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.Range;
 import android.util.Size;
@@ -26,15 +26,15 @@ import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
-
+import androidx.annotation.DrawableRes;
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
-
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -49,27 +49,19 @@ import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-
 import android.graphics.Rect;
-import android.content.ContentValues;
-import android.net.Uri;
-import android.provider.MediaStore;
-import android.os.ParcelFileDescriptor;
-import android.media.MediaScannerConnection;
 
 @CapacitorPlugin(name = "TpaCamera", permissions = {
         @Permission(strings = {
                 Manifest.permission.CAMERA,
                 Manifest.permission.RECORD_AUDIO,
-                Manifest.permission.READ_MEDIA_IMAGES,
-                Manifest.permission.READ_MEDIA_VIDEO,
-                Manifest.permission.READ_MEDIA_AUDIO
+        // Manifest.permission.WRITE_EXTERNAL_STORAGE
         }, alias = "camera")
 })
+
 public class TpaCameraPlugin extends Plugin {
 
     private static final String TAG = "TpaCamera";
@@ -82,12 +74,12 @@ public class TpaCameraPlugin extends Plugin {
     private TextureView textureView;
     private Surface previewSurface;
     private FrameLayout overlay;
-    private Button recordButton, pauseButton, stopButton, backButton;
+    private ImageButton recordButton, pauseButton, stopButton, backButton;
     private TextView timerView;
     private boolean isRecording = false;
     private boolean isPaused = false;
     private long startTime;
-    private String videoPath;
+    private String videoPath; // Absolute file path,
     private PluginCall storedCall;
     private Size selectedSize;
     private String selectedCameraId;
@@ -110,18 +102,35 @@ public class TpaCameraPlugin extends Plugin {
     @PluginMethod
     public void startRecording(PluginCall call) {
         try {
+            // Step 1: Check Capacitor permissions for camera/audio/storage
             if (getPermissionState("camera") != PermissionState.GRANTED) {
+                Log.d(TAG, " startRecording -> getPermissionState...");
                 requestPermissionForAlias("camera", call, "onCameraPermissionResult");
                 return;
+            } else {
+                Log.d(TAG, " startRecording -> Permission granted...");
             }
 
+            // Step 2: For Android 9 and below, manually check WRITE_EXTERNAL_STORAGE
+            // if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            // ActivityCompat.checkSelfPermission(getContext(),
+            // Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+            // PackageManager.PERMISSION_GRANTED) {
+            // ActivityCompat.requestPermissions(
+            // getActivity(),
+            // new String[] { Manifest.permission.WRITE_EXTERNAL_STORAGE },
+            // 1001);
+            // call.reject("Storage permission required");
+            // return;
+            // }
+
+            // Step 3: plugin call parameters
             storedCall = call;
 
-            videoFrameRate = call.getInt("fps", 240); // Default to 240 fps
+            videoFrameRate = call.getInt("fps", 240); // Default to 240fps
             sizeLimit = call.getInt("sizeLimit", 0);
-            String quality = call.getString("resolution", "1080p"); // Default to 1080p
+            String quality = call.getString("resolution", "1080p");
 
-            // LOG INCOMING PARAMETERS
             Log.d(TAG, "[startRecording] Params:");
             Log.d(TAG, " - fps: " + videoFrameRate);
             Log.d(TAG, " - sizeLimit: " + sizeLimit);
@@ -134,7 +143,7 @@ public class TpaCameraPlugin extends Plugin {
             selectOptimalConfiguration(quality);
             startBackgroundThread();
 
-            // -> Hide WebView before showing camera
+            // Hide WebView before launching camera
             getActivity().runOnUiThread(() -> {
                 try {
                     View webView = getBridge().getWebView();
@@ -265,9 +274,11 @@ public class TpaCameraPlugin extends Plugin {
 
     @PermissionCallback
     private void onCameraPermissionResult(PluginCall call) {
+        Log.d(TAG, "onCameraPermissionResult -->  getPermissionState");
         if (getPermissionState("camera") == PermissionState.GRANTED) {
             startRecording(call);
         } else {
+            Log.e(TAG, "onCameraPermissionResult --> Surface setup failed");
             call.reject("Camera permission denied");
         }
     }
@@ -317,6 +328,7 @@ public class TpaCameraPlugin extends Plugin {
         setupUI();
     }
 
+    @SuppressLint("SetTextI18n")
     private void setupUI() {
         Activity activity = getActivity();
         if (activity == null) {
@@ -330,10 +342,10 @@ public class TpaCameraPlugin extends Plugin {
                 FrameLayout.LayoutParams.MATCH_PARENT));
         overlay.setBackgroundColor(0xFF000000);
 
-        recordButton = createStyledButton("🔴");
-        pauseButton = createStyledButton("❘ ❘");
-        stopButton = createStyledButton("■");
-        backButton = createStyledButton("");
+        recordButton = createIconButton(R.drawable.start);
+        pauseButton = createIconButton(R.drawable.pause);
+        stopButton = createIconButton(R.drawable.stop);
+        backButton = createIconButton(R.drawable.back);
 
         timerView = new TextView(activity);
         timerView.setText("00:00");
@@ -389,18 +401,32 @@ public class TpaCameraPlugin extends Plugin {
         setupButtonListeners();
     }
 
-    private Button createStyledButton(String text) {
+    private ImageButton createIconButton(@DrawableRes int drawableId) {
         Activity activity = getActivity();
         if (activity == null)
             return null;
-        Button button = new Button(activity);
-        button.setText(text);
-        button.setTextSize(24);
-        button.setTextColor(0xFFFFFFFF);
-        GradientDrawable shape = new GradientDrawable();
-        shape.setShape(GradientDrawable.OVAL);
-        shape.setColor(0xAA333333);
-        button.setBackground(shape);
+
+        ImageButton button = new ImageButton(activity);
+        button.setImageResource(drawableId);
+
+        // Transparent background and centered scaling for SVG
+        button.setBackgroundColor(Color.TRANSPARENT);
+        button.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        button.setAdjustViewBounds(true); // maintain aspect ratio
+
+        // Set button size to 250x250 pixels
+        int size = 250;
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(size, size);
+        params.setMargins(20, 0, 20, 0); // spacing between buttons
+        button.setLayoutParams(params);
+
+        // Explicitly enforce size (in case layout doesn't honor params)
+        button.setMinimumWidth(size);
+        button.setMinimumHeight(size);
+        button.setMaxWidth(size);
+        button.setMaxHeight(size);
+        button.setPadding(0, 0, 0, 0); // no padding
+
         return button;
     }
 
@@ -411,6 +437,7 @@ public class TpaCameraPlugin extends Plugin {
                     startRecordingInternal();
             });
         }
+
         if (stopButton != null) {
             stopButton.setOnClickListener(v -> {
                 if (isRecording)
@@ -419,16 +446,27 @@ public class TpaCameraPlugin extends Plugin {
                     cancelRecording();
             });
         }
+
         if (pauseButton != null) {
             pauseButton.setOnClickListener(v -> {
-                if (isRecording) {
-                    if (isPaused)
-                        resumeRecording();
-                    else
-                        pauseRecording();
+                Log.d(TAG, "Pause/Resume clicked");
+
+                if (isRecording && !isPaused) {
+                    // Pausing
+                    pauseRecording(); // Call your pauseRecording method
+                    if (stopButton != null)
+                        stopButton.setVisibility(View.GONE);
+                    pauseButton.setImageResource(R.drawable.start); // Resume icon
+                } else if (isRecording && isPaused) {
+                    // Resuming
+                    resumeRecording(); // Call your resumeRecording method
+                    if (stopButton != null)
+                        stopButton.setVisibility(View.VISIBLE);
+                    pauseButton.setImageResource(R.drawable.pause); // Pause icon
                 }
             });
         }
+
         if (backButton != null) {
             backButton.setOnClickListener(v -> cancelRecording());
         }
@@ -708,11 +746,11 @@ public class TpaCameraPlugin extends Plugin {
         bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY());
         matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL);
 
-        // 🔍 Scale only to match the width, keep full aspect ratio
+        // Scale only to match the width, keep full aspect ratio
         float scaleX = (float) viewWidth / selectedSize.getHeight(); // Use rotated width
         matrix.postScale(scaleX, scaleX, centerX, centerY); // Same scale for X and Y
 
-        // 🔄 Rotate and fix upside-down
+        // Rotate and fix upside-down
         matrix.postRotate(90 * (rotation - 2), centerX, centerY);
         matrix.postScale(1, -1, centerX, centerY); // Fix vertical flip
 
@@ -720,7 +758,7 @@ public class TpaCameraPlugin extends Plugin {
     }
 
     private int getRotationDegrees(int sensorOrientation, int displayRotation) {
-        int rotation = 0;
+        int rotation;
         switch (displayRotation) {
             case Surface.ROTATION_0:
                 rotation = 0;
@@ -734,36 +772,37 @@ public class TpaCameraPlugin extends Plugin {
             case Surface.ROTATION_270:
                 rotation = 270;
                 break;
+            default:
+                rotation = 0;
         }
 
-        int result = (sensorOrientation - rotation + 360) % 360;
-        return result;
+        return (sensorOrientation - rotation + 360) % 360;
+
     }
 
     private void setupMediaRecorder() throws IOException {
-        Log.d(TAG, "Initializing MediaRecorder using MediaStore in Movies/recordings...");
+        Log.d(TAG, "Initializing MediaRecorder with direct file path......");
 
-        // Define file metadata
+        // Step 1: Prepare file path
+
         String fileName = "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".mp4";
+        File videosDir = new File(getContext().getExternalFilesDir(null), "tpa-videos");
 
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.Video.Media.DISPLAY_NAME, fileName);
-        values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
-        values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/recordings");
-
-        Uri uri = getContext().getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
-        if (uri == null) {
-            throw new IOException("❌ Failed to create MediaStore entry");
+        if (!videosDir.exists() && !videosDir.mkdirs()) {
+            throw new IOException("Failed to create videos directory: " + videosDir.getAbsolutePath());
         }
 
-        videoPath = uri.toString(); // Save URI for frontend
+        File outputFile = new File(videosDir, fileName);
+        videoPath = outputFile.getAbsolutePath(); // this is now a direct path
+
         Log.d(TAG, "Saving to: " + videoPath);
 
-        // Set up MediaRecorder
+        // Step 2: Configure MediaRecorder
         mediaRecorder = new MediaRecorder();
         mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
         mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
         mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+        mediaRecorder.setOutputFile(videoPath); // use file path
         mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
         mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
 
@@ -771,9 +810,6 @@ public class TpaCameraPlugin extends Plugin {
         mediaRecorder.setVideoEncodingBitRate(bitrate);
         mediaRecorder.setVideoFrameRate(videoFrameRate);
         mediaRecorder.setVideoSize(selectedSize.getWidth(), selectedSize.getHeight());
-
-        // Use the file descriptor from MediaStore URI
-        mediaRecorder.setOutputFile(getContext().getContentResolver().openFileDescriptor(uri, "w").getFileDescriptor());
 
         Activity activity = getActivity();
         if (activity != null) {
@@ -790,21 +826,13 @@ public class TpaCameraPlugin extends Plugin {
         }
 
         mediaRecorder.setOnInfoListener((mr, what, extra) -> {
-            switch (what) {
-                case MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED:
-                    Log.w(TAG, "MediaRecorder info: MAX FILE SIZE REACHED");
-                    break;
-                case MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED:
-                    Log.w(TAG, "MediaRecorder info: MAX DURATION REACHED");
-                    break;
-                default:
-                    Log.w(TAG, "MediaRecorder info: what=" + what + ", extra=" + extra);
-                    break;
+            if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED) {
+                Log.w(TAG, "⚠ Max file size reached");
             }
         });
 
         mediaRecorder.prepare();
-        Log.d(TAG, " MediaRecorder prepared with MediaStore output.");
+        Log.d(TAG, "MediaRecorder prepared (file output mode)");
     }
 
     private void startRecordingInternal() {
@@ -846,10 +874,14 @@ public class TpaCameraPlugin extends Plugin {
             long durationMillis = SystemClock.elapsedRealtime() - startTime;
             float durationSec = durationMillis / 1000f;
 
-            // Reject if duration too short
-            if (durationSec < 0.5f) {
-                Log.w(TAG, "❌ Recording too short or failed, deleting: " + videoPath);
-                deleteVideoFromMediaStore(videoPath);
+            File file = new File(videoPath);
+            // Delete if file is too short or has 0 bytes
+            if (durationSec < 0.5f || !file.exists() || file.length() == 0) {
+                Log.w(TAG, "Recording too short or file invalid, deleting: " + videoPath);
+                if (file.exists()) {
+                    boolean deleted = file.delete();
+                    Log.w(TAG, "Deleted file: " + deleted);
+                }
                 storedCall.reject("Recording too short or failed");
                 return;
             }
@@ -872,23 +904,17 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
-    private void deleteVideoFromMediaStore(String uriString) {
-        try {
-            Uri uri = Uri.parse(uriString);
-            int deleted = getContext().getContentResolver().delete(uri, null, null);
-            Log.w(TAG, "Deleted invalid video, count=" + deleted);
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to delete invalid video", e);
-        }
-    }
-
     private void pauseRecording() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             try {
                 mediaRecorder.pause();
                 isPaused = true;
                 timerHandler.removeCallbacks(timerRunnable);
-                getActivity().runOnUiThread(() -> pauseButton.setText("▶"));
+
+                getActivity().runOnUiThread(() -> {
+                    pauseButton.setBackgroundResource(R.drawable.start); // Set image icon
+                });
+
             } catch (Exception e) {
                 Log.e(TAG, "Failed to pause recording", e);
             }
@@ -903,7 +929,11 @@ public class TpaCameraPlugin extends Plugin {
                 mediaRecorder.resume();
                 isPaused = false;
                 timerHandler.post(timerRunnable);
-                getActivity().runOnUiThread(() -> pauseButton.setText("❘ ❘"));
+
+                getActivity().runOnUiThread(() -> {
+                    pauseButton.setBackgroundResource(R.drawable.pause); // Set image icon
+                });
+
             } catch (Exception e) {
                 Log.e(TAG, "Failed to resume recording", e);
             }
