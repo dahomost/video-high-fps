@@ -389,6 +389,10 @@ public class TpaCameraPlugin extends Plugin {
         pauseButton.setVisibility(View.GONE);
         stopButton.setVisibility(View.GONE);
 
+        // Prevent white flash
+        textureView.setBackgroundColor(0xFF000000);
+        textureView.setAlpha(0f); // hide at start
+
         overlay.addView(textureView);
         overlay.addView(timerView);
         overlay.addView(buttonsLayout);
@@ -568,6 +572,9 @@ public class TpaCameraPlugin extends Plugin {
                     // -> Fix orientation after preview is fully active
                     textureView.post(() -> {
                         configureTransform(textureView.getWidth(), textureView.getHeight());
+
+                        // Smoothly fade in the texture view to avoid flash
+                        textureView.animate().alpha(1f).setDuration(300).start();
                     });
 
                     getActivity().runOnUiThread(() -> {

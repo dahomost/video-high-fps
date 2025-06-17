@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base dark app theme -->
+    <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
+        <!-- Black background for activity window -->
+        <item name="android:windowBackground">@android:color/black</item>
+        <!-- Disable the default white preview on launch -->
+        <item name="android:windowDisablePreview">true</item>
+    </style>
+</resources>
+
+ 
