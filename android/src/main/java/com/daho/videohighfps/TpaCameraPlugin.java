@@ -85,6 +85,7 @@ public class TpaCameraPlugin extends Plugin {
     private String selectedCameraId;
     private int videoFrameRate;
     private int sizeLimit;
+    private View blackPlaceholder;
 
     private final Handler timerHandler = new Handler();
     private final Runnable timerRunnable = new Runnable() {
@@ -101,6 +102,7 @@ public class TpaCameraPlugin extends Plugin {
 
     @PluginMethod
     public void startRecording(PluginCall call) {
+        Log.d(TAG, "-> startRecording(PluginCall call) is called . . . . . . . .");
         try {
             // Step 1: Check Capacitor permissions for camera/audio/storage
             if (getPermissionState("camera") != PermissionState.GRANTED) {
@@ -110,19 +112,6 @@ public class TpaCameraPlugin extends Plugin {
             } else {
                 Log.d(TAG, " startRecording -> Permission granted...");
             }
-
-            // Step 2: For Android 9 and below, manually check WRITE_EXTERNAL_STORAGE
-            // if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
-            // ActivityCompat.checkSelfPermission(getContext(),
-            // Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
-            // PackageManager.PERMISSION_GRANTED) {
-            // ActivityCompat.requestPermissions(
-            // getActivity(),
-            // new String[] { Manifest.permission.WRITE_EXTERNAL_STORAGE },
-            // 1001);
-            // call.reject("Storage permission required");
-            // return;
-            // }
 
             // Step 3: plugin call parameters
             storedCall = call;
@@ -283,17 +272,35 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
+    private View blackOverlayView; // Class field
+
     private void showCameraPreview() {
+        Log.d(TAG, "showCameraPreview -> cancelRecording() triggered");
+
         Activity activity = getActivity();
         if (activity == null) {
             storedCall.reject("Activity not available");
             return;
         }
 
+        // 🔧 Black screen to prevent white flash
+        blackOverlayView = new View(activity);
+        blackOverlayView.setLayoutParams(new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        blackOverlayView.setBackgroundColor(0xFF000000); // Full black
+        blackOverlayView.setAlpha(1f);
+
+        FrameLayout root = activity.findViewById(android.R.id.content);
+        root.addView(blackOverlayView);
+        blackOverlayView.bringToFront(); // Force on top
+
+        // 🔧 TextureView setup
         textureView = new TextureView(activity);
         textureView.setLayoutParams(new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
+        textureView.setKeepScreenOn(true); // Prevent sleep
 
         textureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override
@@ -302,7 +309,7 @@ public class TpaCameraPlugin extends Plugin {
                     surface.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
                     previewSurface = new Surface(surface);
                     configureTransform(width, height);
-                    openCamera();
+                    openCamera(); // ⏩ Start camera (leads to preview)
                 } catch (Exception e) {
                     Log.e(TAG, "Surface setup failed", e);
                     storedCall.reject("Surface setup failed: " + e.getMessage());
@@ -325,7 +332,7 @@ public class TpaCameraPlugin extends Plugin {
             }
         });
 
-        setupUI();
+        setupUI(); // Adds textureView and UI buttons
     }
 
     @SuppressLint("SetTextI18n")
@@ -342,29 +349,43 @@ public class TpaCameraPlugin extends Plugin {
                 FrameLayout.LayoutParams.MATCH_PARENT));
         overlay.setBackgroundColor(0xFF000000);
 
-        recordButton = createIconButton(R.drawable.start);
-        pauseButton = createIconButton(R.drawable.pause);
-        stopButton = createIconButton(R.drawable.stop);
-        backButton = createIconButton(R.drawable.back);
+        // Black placeholder to prevent flash before TextureView is ready
+        blackPlaceholder = new View(activity);
+        blackPlaceholder.setLayoutParams(new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        blackPlaceholder.setBackgroundColor(0xFF000000);
+        overlay.addView(blackPlaceholder); // Add first
 
+        // TextureView
+        textureView.setAlpha(0f); // hidden initially
+        textureView.setKeepScreenOn(true); // prevent screen from sleeping
+        overlay.addView(textureView);
+
+        // Timer
         timerView = new TextView(activity);
         timerView.setText("00:00");
         timerView.setTextSize(24);
         timerView.setTextColor(0xFFFFFFFF);
         timerView.setBackgroundColor(0xAA000000);
         timerView.setPadding(20, 10, 20, 10);
-
         FrameLayout.LayoutParams timerParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         timerParams.setMargins(0, 50, 0, 0);
         timerView.setLayoutParams(timerParams);
+        overlay.addView(timerView);
+
+        // Buttons
+        recordButton = createIconButton(R.drawable.start);
+        pauseButton = createIconButton(R.drawable.pause);
+        stopButton = createIconButton(R.drawable.stop);
+        backButton = createIconButton(R.drawable.back);
 
         LinearLayout buttonsLayout = new LinearLayout(activity);
         buttonsLayout.setOrientation(LinearLayout.HORIZONTAL);
         buttonsLayout.setGravity(Gravity.CENTER);
-
         FrameLayout.LayoutParams buttonsParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -389,12 +410,6 @@ public class TpaCameraPlugin extends Plugin {
         pauseButton.setVisibility(View.GONE);
         stopButton.setVisibility(View.GONE);
 
-        // Prevent white flash
-        textureView.setBackgroundColor(0xFF000000);
-        textureView.setAlpha(0f); // hide at start
-
-        overlay.addView(textureView);
-        overlay.addView(timerView);
         overlay.addView(buttonsLayout);
 
         activity.runOnUiThread(() -> {
@@ -536,6 +551,7 @@ public class TpaCameraPlugin extends Plugin {
         SurfaceTexture surfaceTexture = textureView.getSurfaceTexture();
         if (surfaceTexture == null)
             throw new IllegalStateException("Surface texture not available");
+
         surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
         previewSurface = new Surface(surfaceTexture);
 
@@ -569,12 +585,27 @@ public class TpaCameraPlugin extends Plugin {
                     hsSession.setRepeatingBurst(hsSession.createHighSpeedRequestList(builder.build()), null,
                             backgroundHandler);
 
-                    // -> Fix orientation after preview is fully active
                     textureView.post(() -> {
                         configureTransform(textureView.getWidth(), textureView.getHeight());
 
-                        // Smoothly fade in the texture view to avoid flash
+                        // Fade in the preview
                         textureView.animate().alpha(1f).setDuration(300).start();
+
+                        // Remove black placeholder from overlay
+                        if (blackPlaceholder != null) {
+                            blackPlaceholder.animate()
+                                    .alpha(0f)
+                                    .setDuration(200)
+                                    .withEndAction(() -> overlay.removeView(blackPlaceholder))
+                                    .start();
+                        }
+
+                        // Remove full-screen black overlay
+                        if (blackOverlayView != null) {
+                            ViewGroup root = (ViewGroup) getActivity().findViewById(android.R.id.content);
+                            root.removeView(blackOverlayView);
+                            blackOverlayView = null;
+                        }
                     });
 
                     getActivity().runOnUiThread(() -> {
@@ -582,6 +613,7 @@ public class TpaCameraPlugin extends Plugin {
                         Toast.makeText(getContext(), "Ready: " + videoFrameRate + "fps " +
                                 selectedSize.getWidth() + "x" + selectedSize.getHeight(), Toast.LENGTH_SHORT).show();
                     });
+
                 } catch (Exception e) {
                     Log.e(TAG, "Failed to start high-speed preview", e);
                     storedCall.reject("Failed to start preview: " + e.getMessage());
@@ -626,7 +658,36 @@ public class TpaCameraPlugin extends Plugin {
                             new Range<>(videoFrameRate, videoFrameRate));
 
                     session.setRepeatingRequest(builder.build(), null, backgroundHandler);
-                    getActivity().runOnUiThread(() -> recordButton.setVisibility(View.VISIBLE));
+
+                    textureView.post(() -> {
+                        configureTransform(textureView.getWidth(), textureView.getHeight());
+
+                        // Fade in the preview
+                        textureView.animate().alpha(1f).setDuration(300).start();
+
+                        // Remove black placeholder from overlay
+                        if (blackPlaceholder != null) {
+                            blackPlaceholder.animate()
+                                    .alpha(0f)
+                                    .setDuration(200)
+                                    .withEndAction(() -> overlay.removeView(blackPlaceholder))
+                                    .start();
+                        }
+
+                        // Remove full-screen black overlay
+                        if (blackOverlayView != null) {
+                            ViewGroup root = (ViewGroup) getActivity().findViewById(android.R.id.content);
+                            root.removeView(blackOverlayView);
+                            blackOverlayView = null;
+                        }
+                    });
+
+                    getActivity().runOnUiThread(() -> {
+                        recordButton.setVisibility(View.VISIBLE);
+                        Toast.makeText(getContext(), "Ready: " + videoFrameRate + "fps " +
+                                selectedSize.getWidth() + "x" + selectedSize.getHeight(), Toast.LENGTH_SHORT).show();
+                    });
+
                 } catch (Exception e) {
                     Log.e(TAG, "Failed to start standard preview", e);
                     storedCall.reject("Failed to start preview: " + e.getMessage());
@@ -873,6 +934,7 @@ public class TpaCameraPlugin extends Plugin {
     }
 
     private void stopRecording() {
+        Log.d(TAG, "🔴 startRecordingInternal() called");
         try {
             if (mediaRecorder != null) {
                 mediaRecorder.stop();
@@ -882,8 +944,11 @@ public class TpaCameraPlugin extends Plugin {
             float durationSec = durationMillis / 1000f;
 
             File file = new File(videoPath);
+            long fileSizeBytes = file.exists() ? file.length() : 0;
+            float fileSizeMB = fileSizeBytes / (1024f * 1024f);
+
             // Delete if file is too short or has 0 bytes
-            if (durationSec < 0.5f || !file.exists() || file.length() == 0) {
+            if (durationSec < 0.5f || fileSizeBytes == 0) {
                 Log.w(TAG, "Recording too short or file invalid, deleting: " + videoPath);
                 if (file.exists()) {
                     boolean deleted = file.delete();
@@ -893,12 +958,16 @@ public class TpaCameraPlugin extends Plugin {
                 return;
             }
 
+            // Log file size
+            Log.d(TAG, String.format(Locale.US, "Video saved: %.2f MB (%d bytes)", fileSizeMB, fileSizeBytes));
+
             JSObject result = new JSObject();
             result.put("videoPath", videoPath);
             result.put("frameRate", videoFrameRate);
             result.put("resolution", selectedSize.getWidth() + "x" + selectedSize.getHeight());
             result.put("duration", durationSec);
             result.put("sizeLimit", sizeLimit);
+            result.put("fileSizeMB", fileSizeMB);
 
             Log.d(TAG, "[stopRecording] Result JSON:\n" + result.toString(2));
             storedCall.resolve(result);
@@ -950,6 +1019,7 @@ public class TpaCameraPlugin extends Plugin {
     }
 
     private void cancelRecording() {
+        Log.d(TAG, "x - cancelRecording() triggered");
         try {
             if (isRecording && mediaRecorder != null) {
                 mediaRecorder.stop();
