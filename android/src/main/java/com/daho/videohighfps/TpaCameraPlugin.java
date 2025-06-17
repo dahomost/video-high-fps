@@ -63,7 +63,7 @@ import android.graphics.Rect;
 
 public class TpaCameraPlugin extends Plugin {
 
-    private static final String TAG = "TpaCamera";
+    private static final String TAG = "TpaCamera --=>";
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
     private MediaRecorder mediaRecorder;
@@ -86,6 +86,7 @@ public class TpaCameraPlugin extends Plugin {
     private long sizeLimit;
 
     private View blackPlaceholder;
+    private final Object cameraLock = new Object();
 
     private final Handler timerHandler = new Handler();
     private final Runnable timerRunnable = new Runnable() {
@@ -125,11 +126,15 @@ public class TpaCameraPlugin extends Plugin {
         Log.d(TAG, " - resolution: " + resolution);
 
         try {
+            // 🧠 Restart background thread and clear old state
+            startBackgroundThread();
+            cameraDevice = null;
+            captureSession = null;
+
             // Automatically select best supported configuration
             this.selectedCameraId = getPreferredCameraId();
             selectOptimalConfiguration(resolution, videoFrameRate);
 
-            // 🔧 Move preview setup to UI thread to prevent crash
             getActivity().runOnUiThread(() -> {
                 try {
                     showCameraPreview(); // creates textureView, overlay
@@ -141,13 +146,9 @@ public class TpaCameraPlugin extends Plugin {
                         Log.d(TAG, "WebView hidden for full-screen native recording");
                     }
                 } catch (Exception e) {
-                    Log.e(TAG, "Failed to show camera preview", e);
-                    storedCall.reject("Failed to show camera preview: " + e.getMessage());
+                    rejectIfPossible(e.getMessage());
                 }
             });
-
-            Log.d(TAG, "Initializing MediaRecorder with direct file path......");
-            setupMediaRecorder(); // set outputFile, orientation, etc.
 
         } catch (Exception e) {
             Log.e(TAG, "Failed to start recording", e);
@@ -303,7 +304,7 @@ public class TpaCameraPlugin extends Plugin {
 
         Activity activity = getActivity();
         if (activity == null) {
-            storedCall.reject("Activity not available");
+            rejectIfPossible("Activity not available");
             return;
         }
 
@@ -329,15 +330,13 @@ public class TpaCameraPlugin extends Plugin {
         textureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override
             public void onSurfaceTextureAvailable(@NonNull SurfaceTexture surface, int width, int height) {
-                try {
+                if (selectedSize != null) {
                     surface.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
                     previewSurface = new Surface(surface);
                     configureTransform(width, height);
-                    openCamera(); // ⏩ Start camera (leads to preview)
-                } catch (Exception e) {
-                    Log.e(TAG, "Surface setup failed", e);
-                    storedCall.reject("Surface setup failed: " + e.getMessage());
-                    cleanupResources();
+                    openCamera();
+                } else {
+                    rejectIfPossible("Camera preview setup failed: no resolution selected");
                 }
             }
 
@@ -363,7 +362,7 @@ public class TpaCameraPlugin extends Plugin {
     private void setupUI() {
         Activity activity = getActivity();
         if (activity == null) {
-            storedCall.reject("Activity not available");
+            rejectIfPossible("Activity not available");
             return;
         }
 
@@ -519,7 +518,14 @@ public class TpaCameraPlugin extends Plugin {
         Activity activity = getActivity();
         if (activity == null || ActivityCompat.checkSelfPermission(activity,
                 Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            storedCall.reject("Camera permission not granted");
+            rejectIfPossible("Camera permission not granted");
+            cleanupResources();
+            return;
+        }
+
+        if (selectedCameraId == null) {
+            Log.e(TAG, "selectedCameraId is null");
+            rejectIfPossible("Camera ID not selected");
             cleanupResources();
             return;
         }
@@ -528,18 +534,30 @@ public class TpaCameraPlugin extends Plugin {
             cameraManager.openCamera(selectedCameraId, new CameraDevice.StateCallback() {
                 @Override
                 public void onOpened(@NonNull CameraDevice camera) {
-                    cameraDevice = camera;
-                    try {
-                        if (videoFrameRate >= 120) {
-                            startHighSpeedCaptureSession();
-                        } else {
-                            startStandardCaptureSession();
-                        }
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to start capture session", e);
-                        storedCall.reject("Failed to start capture session: " + e.getMessage());
-                        cleanupResources();
+                    synchronized (cameraLock) {
+                        Log.d(TAG, "onOpened() -> Assigning cameraDevice...");
+                        cameraDevice = camera;
                     }
+
+                    backgroundHandler.post(() -> {
+                        try {
+                            synchronized (cameraLock) {
+                                if (cameraDevice == null) {
+                                    rejectIfPossible("Camera disconnected before session start");
+                                    return;
+                                }
+
+                                if (videoFrameRate >= 120) {
+                                    startHighSpeedCaptureSession();
+                                } else {
+                                    startStandardCaptureSession();
+                                }
+                            }
+                        } catch (Exception e) {
+                            rejectIfPossible(e.getMessage());
+                            cleanupResources();
+                        }
+                    });
                 }
 
                 @Override
@@ -553,17 +571,22 @@ public class TpaCameraPlugin extends Plugin {
                 public void onError(@NonNull CameraDevice camera, int error) {
                     camera.close();
                     cameraDevice = null;
-                    storedCall.reject("Camera error: " + error);
+                    rejectIfPossible("Camera error: " + error);
                     cleanupResources();
                 }
             }, backgroundHandler);
         } catch (CameraAccessException e) {
-            storedCall.reject("Camera access failed: " + e.getMessage());
+            rejectIfPossible("Camera access failed: " + e.getMessage());
             cleanupResources();
         }
     }
 
     private void startHighSpeedCaptureSession() throws Exception {
+        if (cameraDevice == null) {
+            rejectIfPossible("cameraDevice is null – aborting high-speed session setup");
+            return;
+        }
+
         CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
         StreamConfigurationMap configMap = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
         if (configMap == null || configMap.getHighSpeedVideoSizes() == null) {
@@ -573,14 +596,21 @@ public class TpaCameraPlugin extends Plugin {
         }
 
         SurfaceTexture surfaceTexture = textureView.getSurfaceTexture();
-        if (surfaceTexture == null)
+        if (surfaceTexture == null) {
             throw new IllegalStateException("Surface texture not available");
+        }
 
         surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
         previewSurface = new Surface(surfaceTexture);
 
+        safeReleaseMediaRecorder();
+
+        // Setup MediaRecorder AFTER surfaces are ready
         setupMediaRecorder();
         Surface recorderSurface = mediaRecorder.getSurface();
+        if (recorderSurface == null) {
+            throw new IllegalStateException("Recorder surface is null after prepare()");
+        }
 
         List<Surface> surfaces = new ArrayList<>();
         surfaces.add(previewSurface);
@@ -589,9 +619,17 @@ public class TpaCameraPlugin extends Plugin {
         cameraDevice.createConstrainedHighSpeedCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
             @Override
             public void onConfigured(@NonNull CameraCaptureSession session) {
+                if (cameraDevice == null) {
+                    rejectIfPossible("cameraDevice became null after session configuration");
+                    cleanupResources();
+                    return;
+                }
+
                 captureSession = session;
+
                 try {
                     CameraConstrainedHighSpeedCaptureSession hsSession = (CameraConstrainedHighSpeedCaptureSession) session;
+
                     CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
                     builder.addTarget(previewSurface);
                     builder.addTarget(recorderSurface);
@@ -601,30 +639,34 @@ public class TpaCameraPlugin extends Plugin {
 
                     Rect sensorRect = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
                     if (sensorRect == null) {
-                        Log.w(TAG, "Sensor info active array size not available, using default");
+                        Log.w(TAG, "Sensor info not available, using default crop");
                         sensorRect = new Rect(0, 0, selectedSize.getWidth(), selectedSize.getHeight());
                     }
                     builder.set(CaptureRequest.SCALER_CROP_REGION, sensorRect);
 
-                    hsSession.setRepeatingBurst(hsSession.createHighSpeedRequestList(builder.build()), null,
+                    hsSession.setRepeatingBurst(
+                            hsSession.createHighSpeedRequestList(builder.build()),
+                            null,
                             backgroundHandler);
 
                     textureView.post(() -> {
                         configureTransform(textureView.getWidth(), textureView.getHeight());
+                        fadeTo(textureView, 1f, 300); // Fade in
 
-                        // Fade in the preview
-                        textureView.animate().alpha(1f).setDuration(300).start();
-
-                        // Remove black placeholder from overlay
                         if (blackPlaceholder != null) {
                             blackPlaceholder.animate()
                                     .alpha(0f)
                                     .setDuration(200)
-                                    .withEndAction(() -> overlay.removeView(blackPlaceholder))
+                                    .withEndAction(() -> {
+                                        try {
+                                            overlay.removeView(blackPlaceholder);
+                                        } catch (Exception e) {
+                                            Log.e(TAG, "⚠️ Failed to remove blackPlaceholder", e);
+                                        }
+                                    })
                                     .start();
                         }
 
-                        // Remove full-screen black overlay
                         if (blackOverlayView != null) {
                             ViewGroup root = (ViewGroup) getActivity().findViewById(android.R.id.content);
                             root.removeView(blackOverlayView);
@@ -639,8 +681,7 @@ public class TpaCameraPlugin extends Plugin {
                     });
 
                 } catch (Exception e) {
-                    Log.e(TAG, "Failed to start high-speed preview", e);
-                    storedCall.reject("Failed to start preview: " + e.getMessage());
+                    rejectIfPossible("Failed to start preview: " + e.getMessage());
                     cleanupResources();
                 }
             }
@@ -648,7 +689,7 @@ public class TpaCameraPlugin extends Plugin {
             @Override
             public void onConfigureFailed(@NonNull CameraCaptureSession session) {
                 Log.e(TAG, "High-speed session configuration failed");
-                storedCall.reject("High-speed configuration failed");
+                rejectIfPossible("High-speed configuration failed");
                 cleanupResources();
             }
         }, backgroundHandler);
@@ -662,8 +703,15 @@ public class TpaCameraPlugin extends Plugin {
         surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
         previewSurface = new Surface(surfaceTexture);
 
+        // Reset old MediaRecorder if it exists
+        safeReleaseMediaRecorder();
+
+        // Setup MediaRecorder AFTER surfaces are ready
         setupMediaRecorder();
         Surface recorderSurface = mediaRecorder.getSurface();
+        if (recorderSurface == null) {
+            throw new IllegalStateException("Recorder surface is null after prepare()");
+        }
 
         List<Surface> surfaces = new ArrayList<>();
         surfaces.add(previewSurface);
@@ -687,14 +735,23 @@ public class TpaCameraPlugin extends Plugin {
                         configureTransform(textureView.getWidth(), textureView.getHeight());
 
                         // Fade in the preview
-                        textureView.animate().alpha(1f).setDuration(300).start();
+                        fadeTo(textureView, 1f, 300); // Fade in
 
                         // Remove black placeholder from overlay
                         if (blackPlaceholder != null) {
                             blackPlaceholder.animate()
                                     .alpha(0f)
                                     .setDuration(200)
-                                    .withEndAction(() -> overlay.removeView(blackPlaceholder))
+                                    .withEndAction(() -> {
+                                        try {
+                                            if (overlay != null && blackPlaceholder != null
+                                                    && blackPlaceholder.getParent() == overlay) {
+                                                overlay.removeView(blackPlaceholder);
+                                            }
+                                        } catch (Exception e) {
+                                            Log.e(TAG, "Failed to remove blackPlaceholder", e);
+                                        }
+                                    })
                                     .start();
                         }
 
@@ -713,16 +770,14 @@ public class TpaCameraPlugin extends Plugin {
                     });
 
                 } catch (Exception e) {
-                    Log.e(TAG, "Failed to start standard preview", e);
-                    storedCall.reject("Failed to start preview: " + e.getMessage());
+                    rejectIfPossible("Failed to start preview: " + e.getMessage());
                     cleanupResources();
                 }
             }
 
             @Override
             public void onConfigureFailed(@NonNull CameraCaptureSession session) {
-                Log.e(TAG, "Standard session configuration failed");
-                storedCall.reject("Standard configuration failed");
+                rejectIfPossible("Standard configuration failed");
                 cleanupResources();
             }
         }, backgroundHandler);
@@ -730,35 +785,23 @@ public class TpaCameraPlugin extends Plugin {
 
     private int calculateBitrate(Size resolution, int fps) {
         int pixels = resolution.getWidth() * resolution.getHeight();
-        if (pixels >= 3840 * 2160)
-            return fps >= 120 ? 40_000_000 : 30_000_000;
-        if (pixels >= 1920 * 1080)
-            return fps >= 120 ? 20_000_000 : 15_000_000;
-        return fps >= 120 ? 12_000_000 : 8_000_000;
+        int base = (int) (pixels * fps * 0.07f);
+        return Math.min(base, 50_000_000);
     }
 
     private void cleanupResources() {
-        try {
+        if (timerHandler != null) {
             timerHandler.removeCallbacks(timerRunnable);
-            isRecording = false;
-            isPaused = false;
-            startTime = 0;
+        }
 
-            if (mediaRecorder != null) {
-                try {
-                    mediaRecorder.reset();
-                    mediaRecorder.release();
-                } catch (Exception e) {
-                    Log.e(TAG, "Error releasing media recorder", e);
-                }
-                mediaRecorder = null;
-            }
+        Log.d(TAG, "cleanupResources() called");
 
+        try {
             if (captureSession != null) {
                 try {
                     captureSession.close();
                 } catch (Exception e) {
-                    Log.e(TAG, "Error closing capture session", e);
+                    Log.w(TAG, "Failed to close captureSession", e);
                 }
                 captureSession = null;
             }
@@ -767,56 +810,76 @@ public class TpaCameraPlugin extends Plugin {
                 try {
                     cameraDevice.close();
                 } catch (Exception e) {
-                    Log.e(TAG, "Error closing camera device", e);
+                    Log.w(TAG, "Failed to close cameraDevice", e);
                 }
                 cameraDevice = null;
             }
+
+            safeReleaseMediaRecorder();
 
             if (previewSurface != null) {
                 try {
                     previewSurface.release();
                 } catch (Exception e) {
-                    Log.e(TAG, "Error releasing preview surface", e);
+                    Log.w(TAG, "Failed to release previewSurface", e);
                 }
                 previewSurface = null;
             }
 
-            Activity activity = getActivity();
-            if (activity != null) {
-                activity.runOnUiThread(() -> {
-                    try {
-                        FrameLayout root = activity.findViewById(android.R.id.content);
-                        if (overlay != null) {
-                            root.removeView(overlay);
-                            overlay = null;
-                            Log.d(TAG, "Overlay removed");
-                        }
-
-                        // -> Restore WebView
-                        View webView = getBridge().getWebView();
-                        if (webView != null) {
-                            webView.setVisibility(View.VISIBLE);
-                            Log.d(TAG, "WebView restored after recording");
-                        }
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error restoring WebView", e);
+            if (blackPlaceholder != null && overlay != null) {
+                try {
+                    if (blackPlaceholder.getParent() == overlay) {
+                        overlay.removeView(blackPlaceholder);
                     }
-                });
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to remove blackPlaceholder in cleanup", e);
+                }
+            }
+            blackPlaceholder = null;
+
+            if (blackOverlayView != null) {
+                try {
+                    ViewGroup root = (ViewGroup) getActivity().findViewById(android.R.id.content);
+                    if (blackOverlayView.getParent() == root) {
+                        root.removeView(blackOverlayView);
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to remove blackOverlayView in cleanup", e);
+                }
+            }
+            blackOverlayView = null;
+
+            if (overlay != null) {
+                try {
+                    ViewGroup root = (ViewGroup) getActivity().findViewById(android.R.id.content);
+                    if (overlay.getParent() == root) {
+                        root.removeView(overlay);
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to remove overlay in cleanup", e);
+                }
+            }
+            overlay = null;
+
+            if (textureView != null && textureView.getAlpha() > 0f) {
+                try {
+                    fadeTo(textureView, 0f, 100); // Fade out camera preview
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to fade out textureView", e);
+                }
             }
 
-            if (backgroundThread != null) {
-                backgroundThread.quitSafely();
-                try {
-                    backgroundThread.join();
-                } catch (InterruptedException e) {
-                    Log.e(TAG, "Error joining background thread", e);
+            // Restore Ionic WebView visibility if it was hidden
+            if (bridge != null && bridge.getWebView() != null) {
+                View webView = bridge.getWebView();
+                if (webView.getVisibility() != View.VISIBLE) {
+                    webView.setVisibility(View.VISIBLE);
+                    fadeTo(webView, 1f, 200); // Smooth fade in
                 }
-                backgroundThread = null;
-                backgroundHandler = null;
             }
 
         } catch (Exception e) {
-            Log.e(TAG, "Error during cleanup", e);
+            Log.e(TAG, "Unhandled error during cleanupResources..", e);
         }
     }
 
@@ -928,16 +991,20 @@ public class TpaCameraPlugin extends Plugin {
     }
 
     private void startRecordingInternal() {
+        if (isRecording)
+            return;
+
         try {
 
             if (mediaRecorder == null) {
-                Log.e(TAG, "MediaRecorder is null, cannot start recording");
-                storedCall.reject("MediaRecorder not initialized");
+                rejectIfPossible("MediaRecorder is null, cannot start recording - MediaRecorder not initialized");
                 cleanupResources();
                 return;
             }
 
             mediaRecorder.start();
+            SystemClock.sleep(50); // Wait 50ms to ensure internal encoder is ready
+
             isRecording = true;
             isPaused = false;
             startTime = SystemClock.elapsedRealtime();
@@ -951,8 +1018,7 @@ public class TpaCameraPlugin extends Plugin {
             });
 
         } catch (Exception e) {
-            Log.e(TAG, "Failed to start recording", e);
-            storedCall.reject("Failed to start recording: " + e.getMessage());
+            rejectIfPossible("Failed to start recording: " + e.getMessage());
             cleanupResources();
         }
     }
@@ -978,7 +1044,8 @@ public class TpaCameraPlugin extends Plugin {
                     boolean deleted = file.delete();
                     Log.w(TAG, "Deleted file: " + deleted);
                 }
-                storedCall.reject("Recording too short or failed");
+
+                rejectIfPossible("Recording too short or failed");
                 return;
             }
 
@@ -994,11 +1061,13 @@ public class TpaCameraPlugin extends Plugin {
             result.put("fileSizeMB", fileSizeMB);
 
             Log.d(TAG, "[stopRecording] Result JSON:\n" + result.toString(2));
-            storedCall.resolve(result);
+            if (storedCall != null) {
+                storedCall.resolve(result);
+                storedCall = null;
+            }
 
         } catch (Exception e) {
-            Log.e(TAG, "Failed to stop recording", e);
-            storedCall.reject("Failed to stop recording: " + e.getMessage());
+            rejectIfPossible("Failed to stop recording: " + e.getMessage());
         } finally {
             cleanupResources();
         }
@@ -1045,15 +1114,80 @@ public class TpaCameraPlugin extends Plugin {
     private void cancelRecording() {
         Log.d(TAG, "x - cancelRecording() triggered");
         try {
-            if (isRecording && mediaRecorder != null) {
+            if (!isRecording) {
+                Log.w(TAG, "Cancel called but recording was not in progress");
+                return;
+            }
+
+            if (mediaRecorder != null) {
                 mediaRecorder.stop();
             }
-            storedCall.reject("Recording canceled by user");
+
+            rejectIfPossible("Recording canceled by user");
+
         } catch (Exception e) {
-            Log.e(TAG, "Error canceling recording", e);
-            storedCall.reject("Error canceling recording: " + e.getMessage());
+            rejectIfPossible("Error canceling recording: " + e.getMessage());
         } finally {
             cleanupResources();
+
+            // Restore WebView visibility to avoid blank screen
+            if (bridge != null && bridge.getWebView() != null) {
+                bridge.getWebView().setVisibility(View.VISIBLE);
+                fadeTo(bridge.getWebView(), 1f, 200);
+            }
+        }
+    }
+
+    private void rejectIfPossible(String message) {
+        if (storedCall != null) {
+            Log.e(TAG, message);
+            storedCall.reject(message);
+            storedCall = null;
+        } else
+            Log.w(TAG, "storedCall is null. Could not reject: " + message);
+
+    }
+
+    private void safeReleaseMediaRecorder() {
+        if (mediaRecorder != null) {
+            try {
+                mediaRecorder.reset();
+                mediaRecorder.release();
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to release MediaRecorder", e);
+            } finally {
+                mediaRecorder = null;
+            }
+        }
+    }
+
+    private void fadeTo(View view, float targetAlpha, int duration) {
+        if (view == null)
+            return;
+
+        float currentAlpha = view.getAlpha();
+        if (Math.abs(currentAlpha - targetAlpha) < 0.01f)
+            return;
+
+        view.animate().alpha(targetAlpha).setDuration(duration).start();
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        stopBackgroundThread();
+        cleanupResources();
+    }
+
+    private void stopBackgroundThread() {
+        if (backgroundThread != null) {
+            backgroundThread.quitSafely();
+            try {
+                backgroundThread.join();
+            } catch (InterruptedException e) {
+                Log.e(TAG, "Failed to join background thread", e);
+            }
+            backgroundThread = null;
+            backgroundHandler = null;
         }
     }
 }
