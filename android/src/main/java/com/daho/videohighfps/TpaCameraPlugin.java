@@ -103,7 +103,7 @@ public class TpaCameraPlugin extends Plugin {
 
     @PluginMethod
     public void startRecording(PluginCall call) {
-        Log.d(TAG, "-> startRecording(PluginCall call) is called");
+        Log.d(TAG, "startRecording(PluginCall call) is called");
 
         this.storedCall = call;
         this.cameraManager = (CameraManager) getContext().getSystemService(Context.CAMERA_SERVICE);
@@ -113,24 +113,24 @@ public class TpaCameraPlugin extends Plugin {
             return;
         }
 
-        Log.d(TAG, "  startRecording -> Permission granted...");
+        Log.d(TAG, "startRecording -> Permission granted...");
 
         // Read parameters
-        this.videoFrameRate = 30; // call.getInt("fps", 240);
-        String resolution = "1080p"; // call.getString("resolution", "fhd");
+        this.videoFrameRate = call.getInt("fps", 240);
+        String resolution = call.getString("resolution", "1080p");
         this.sizeLimit = call.getLong("sizeLimit", 0L);
 
-        Log.d(TAG, "[startRecording] Params:");
-        Log.d(TAG, " - fps: " + videoFrameRate);
-        Log.d(TAG, " - sizeLimit: " + sizeLimit);
-        Log.d(TAG, " - resolution: " + resolution);
+        Log.d(TAG, "start Recording Params:");
+        Log.d(TAG, " --> fps: " + videoFrameRate);
+        Log.d(TAG, " --> sizeLimit: " + sizeLimit);
+        Log.d(TAG, " --> resolution: " + resolution);
 
         try {
-            // 🧼 Full reset before reusing
+            // Full reset before reusing
             cleanupResources();
             stopBackgroundThread();
 
-            // 🎬 Start fresh
+            // Start fresh
             startBackgroundThread();
             cameraDevice = null;
             captureSession = null;
@@ -214,15 +214,12 @@ public class TpaCameraPlugin extends Plugin {
         // Define preferred sizes based on input
         Size preferredSize;
         switch (resolution) {
-            case "uhd":
             case "4k":
                 preferredSize = new Size(3840, 2160);
                 break;
-            case "fhd":
             case "1080p":
                 preferredSize = new Size(1920, 1080);
                 break;
-            case "hd":
             case "720p":
             default:
                 preferredSize = new Size(1280, 720);
@@ -316,7 +313,7 @@ public class TpaCameraPlugin extends Plugin {
             return;
         }
 
-        // 🔧 Black screen to prevent white flash
+        // Black screen to prevent white flash
         blackOverlayView = new View(activity);
         blackOverlayView.setLayoutParams(new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -328,7 +325,7 @@ public class TpaCameraPlugin extends Plugin {
         root.addView(blackOverlayView);
         blackOverlayView.bringToFront(); // Force on top
 
-        // 🔧 TextureView setup
+        // TextureView setup
         textureView = new TextureView(activity);
         textureView.setLayoutParams(new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -503,13 +500,13 @@ public class TpaCameraPlugin extends Plugin {
 
                 if (isRecording && !isPaused) {
                     // Pausing
-                    pauseRecording(); // Call your pauseRecording method
+                    pauseRecording(); // Call pauseRecording method
                     if (stopButton != null)
                         stopButton.setVisibility(View.GONE);
                     pauseButton.setImageResource(R.drawable.start); // Resume icon
                 } else if (isRecording && isPaused) {
                     // Resuming
-                    resumeRecording(); // Call your resumeRecording method
+                    resumeRecording(); // Call resumeRecording method
                     if (stopButton != null)
                         stopButton.setVisibility(View.VISIBLE);
                     pauseButton.setImageResource(R.drawable.pause); // Pause icon
@@ -563,7 +560,7 @@ public class TpaCameraPlugin extends Plugin {
                             }
                         } catch (Exception e) {
                             rejectIfPossible(e.getMessage());
-                            cleanupResources();
+                            getActivity().runOnUiThread(() -> cleanupResources());
                         }
                     });
                 }
@@ -572,7 +569,7 @@ public class TpaCameraPlugin extends Plugin {
                 public void onDisconnected(@NonNull CameraDevice camera) {
                     camera.close();
                     cameraDevice = null;
-                    cleanupResources();
+                    getActivity().runOnUiThread(() -> cleanupResources());
                 }
 
                 @Override
@@ -580,7 +577,7 @@ public class TpaCameraPlugin extends Plugin {
                     camera.close();
                     cameraDevice = null;
                     rejectIfPossible("Camera error: " + error);
-                    cleanupResources();
+                    getActivity().runOnUiThread(() -> cleanupResources());
                 }
             }, backgroundHandler);
         } catch (CameraAccessException e) {
@@ -669,7 +666,7 @@ public class TpaCameraPlugin extends Plugin {
                                         try {
                                             overlay.removeView(blackPlaceholder);
                                         } catch (Exception e) {
-                                            Log.e(TAG, "⚠️ Failed to remove blackPlaceholder", e);
+                                            Log.e(TAG, "Failed to remove blackPlaceholder", e);
                                         }
                                     })
                                     .start();
@@ -690,7 +687,7 @@ public class TpaCameraPlugin extends Plugin {
 
                 } catch (Exception e) {
                     rejectIfPossible("Failed to start preview: " + e.getMessage());
-                    cleanupResources();
+                    getActivity().runOnUiThread(() -> cleanupResources());
                 }
             }
 
@@ -698,7 +695,7 @@ public class TpaCameraPlugin extends Plugin {
             public void onConfigureFailed(@NonNull CameraCaptureSession session) {
                 Log.e(TAG, "High-speed session configuration failed");
                 rejectIfPossible("High-speed configuration failed");
-                cleanupResources();
+                getActivity().runOnUiThread(() -> cleanupResources());
             }
         }, backgroundHandler);
     }
@@ -714,7 +711,7 @@ public class TpaCameraPlugin extends Plugin {
         // Reset old MediaRecorder if it exists
         safeReleaseMediaRecorder();
 
-        // Setup MediaRecorder AFTER surfaces are ready
+        // Setup MediaRecorder after surfaces are ready
         setupMediaRecorder();
         Surface recorderSurface = mediaRecorder.getSurface();
         if (recorderSurface == null) {
@@ -779,14 +776,14 @@ public class TpaCameraPlugin extends Plugin {
 
                 } catch (Exception e) {
                     rejectIfPossible("Failed to start preview: " + e.getMessage());
-                    cleanupResources();
+                    getActivity().runOnUiThread(() -> cleanupResources());
                 }
             }
 
             @Override
             public void onConfigureFailed(@NonNull CameraCaptureSession session) {
                 rejectIfPossible("Standard configuration failed");
-                cleanupResources();
+                getActivity().runOnUiThread(() -> cleanupResources());
             }
         }, backgroundHandler);
     }
@@ -801,9 +798,7 @@ public class TpaCameraPlugin extends Plugin {
         if (timerHandler != null) {
             timerHandler.removeCallbacks(timerRunnable);
         }
-
         Log.d(TAG, "cleanupResources() called");
-
         try {
             if (captureSession != null) {
                 try {
@@ -834,57 +829,48 @@ public class TpaCameraPlugin extends Plugin {
                 previewSurface = null;
             }
 
-            if (blackPlaceholder != null && overlay != null) {
+            // Ensure UI view removal is done on UI thread
+            getActivity().runOnUiThread(() -> {
                 try {
-                    if (blackPlaceholder.getParent() == overlay) {
-                        overlay.removeView(blackPlaceholder);
+                    if (blackPlaceholder != null && overlay != null) {
+                        if (blackPlaceholder.getParent() == overlay) {
+                            overlay.removeView(blackPlaceholder);
+                        }
                     }
-                } catch (Exception e) {
-                    Log.w(TAG, "Failed to remove blackPlaceholder in cleanup", e);
-                }
-            }
-            blackPlaceholder = null;
+                    blackPlaceholder = null;
 
-            if (blackOverlayView != null) {
-                try {
-                    ViewGroup root = (ViewGroup) getActivity().findViewById(android.R.id.content);
-                    if (blackOverlayView.getParent() == root) {
-                        root.removeView(blackOverlayView);
+                    if (blackOverlayView != null) {
+                        ViewGroup root = (ViewGroup) getActivity().findViewById(android.R.id.content);
+                        if (blackOverlayView.getParent() == root) {
+                            root.removeView(blackOverlayView);
+                        }
                     }
-                } catch (Exception e) {
-                    Log.w(TAG, "Failed to remove blackOverlayView in cleanup", e);
-                }
-            }
-            blackOverlayView = null;
+                    blackOverlayView = null;
 
-            if (overlay != null) {
-                try {
-                    ViewGroup root = (ViewGroup) getActivity().findViewById(android.R.id.content);
-                    if (overlay.getParent() == root) {
-                        root.removeView(overlay);
+                    if (overlay != null) {
+                        ViewGroup root = (ViewGroup) getActivity().findViewById(android.R.id.content);
+                        if (overlay.getParent() == root) {
+                            root.removeView(overlay);
+                        }
                     }
-                } catch (Exception e) {
-                    Log.w(TAG, "Failed to remove overlay in cleanup", e);
-                }
-            }
-            overlay = null;
+                    overlay = null;
 
-            if (textureView != null && textureView.getAlpha() > 0f) {
-                try {
-                    fadeTo(textureView, 0f, 100); // Fade out camera preview
-                } catch (Exception e) {
-                    Log.w(TAG, "Failed to fade out textureView", e);
-                }
-            }
+                    if (textureView != null && textureView.getAlpha() > 0f) {
+                        fadeTo(textureView, 0f, 100); // Fade out camera preview
+                    }
 
-            // Restore Ionic WebView visibility if it was hidden
-            if (bridge != null && bridge.getWebView() != null) {
-                View webView = bridge.getWebView();
-                if (webView.getVisibility() != View.VISIBLE) {
-                    webView.setVisibility(View.VISIBLE);
-                    fadeTo(webView, 1f, 200); // Smooth fade in
+                    if (bridge != null && bridge.getWebView() != null) {
+                        View webView = bridge.getWebView();
+                        if (webView.getVisibility() != View.VISIBLE) {
+                            webView.setVisibility(View.VISIBLE);
+                            fadeTo(webView, 1f, 200); // Smooth fade in
+                        }
+                    }
+
+                } catch (Exception e) {
+                    Log.w(TAG, "Error during UI cleanup", e);
                 }
-            }
+            });
 
         } catch (Exception e) {
             Log.e(TAG, "Unhandled error during cleanupResources..", e);
@@ -990,7 +976,7 @@ public class TpaCameraPlugin extends Plugin {
 
         mediaRecorder.setOnInfoListener((mr, what, extra) -> {
             if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED) {
-                Log.w(TAG, "⚠ Max file size reached");
+                Log.w(TAG, "Max file size reached");
             }
         });
 
@@ -1009,7 +995,7 @@ public class TpaCameraPlugin extends Plugin {
         if (mediaRecorder == null) {
             Log.e(TAG, "startRecordingInternal: MediaRecorder is null");
             rejectIfPossible("MediaRecorder is null, cannot start recording");
-            cleanupResources();
+            getActivity().runOnUiThread(() -> cleanupResources());
             return;
         }
 
@@ -1034,16 +1020,16 @@ public class TpaCameraPlugin extends Plugin {
         } catch (IllegalStateException e) {
             Log.e(TAG, "Failed to start MediaRecorder", e);
             rejectIfPossible("Failed to start recording: MediaRecorder error");
-            cleanupResources();
+            getActivity().runOnUiThread(() -> cleanupResources());
         } catch (Exception e) {
             Log.e(TAG, "Unexpected error in startRecordingInternal", e);
             rejectIfPossible("Failed to start recording: " + e.getMessage());
-            cleanupResources();
+            getActivity().runOnUiThread(() -> cleanupResources());
         }
     }
 
     private void stopRecording() {
-        Log.d(TAG, "🔴 startRecordingInternal() called");
+        Log.d(TAG, "🔴 stopRecording() method called");
         try {
             if (mediaRecorder != null) {
                 mediaRecorder.stop();
@@ -1088,7 +1074,7 @@ public class TpaCameraPlugin extends Plugin {
         } catch (Exception e) {
             rejectIfPossible("Failed to stop recording: " + e.getMessage());
         } finally {
-            cleanupResources();
+            getActivity().runOnUiThread(() -> cleanupResources()); // safe
         }
     }
 
@@ -1150,20 +1136,24 @@ public class TpaCameraPlugin extends Plugin {
             Log.e(TAG, "Unexpected error canceling recording", e);
             rejectIfPossible("Error canceling recording: " + e.getMessage());
         } finally {
-            // 💡 Fully cleanup + reset state
-            cleanupResources();
-            stopBackgroundThread(); // shut down camera thread
             isRecording = false;
             isPaused = false;
             storedCall = null;
 
-            // ✅ Bring back WebView cleanly
-            if (bridge != null && bridge.getWebView() != null) {
-                View webView = bridge.getWebView();
-                webView.setVisibility(View.VISIBLE);
-                fadeTo(webView, 1f, 200);
-                Log.d(TAG, "WebView restored after cancel");
-            }
+            stopBackgroundThread(); // shut down camera thread
+
+            getActivity().runOnUiThread(() -> {
+                // UI-safe cleanup
+                cleanupResources();
+
+                // Bring back WebView
+                if (bridge != null && bridge.getWebView() != null) {
+                    View webView = bridge.getWebView();
+                    webView.setVisibility(View.VISIBLE);
+                    fadeTo(webView, 1f, 200);
+                    Log.d(TAG, "WebView restored after cancel");
+                }
+            });
         }
     }
 
@@ -1204,7 +1194,7 @@ public class TpaCameraPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         stopBackgroundThread();
-        cleanupResources();
+        getActivity().runOnUiThread(() -> cleanupResources());
     }
 
     private void stopBackgroundThread() {
