@@ -13,7 +13,6 @@ import android.hardware.camera2.*;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.MediaRecorder;
 import android.os.Build;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.SystemClock;
@@ -116,9 +115,14 @@ public class TpaCameraPlugin extends Plugin {
         Log.d(TAG, "startRecording -> Permission granted...");
 
         // Read parameters
-        this.videoFrameRate = call.getInt("fps", 240);
-        String resolution = call.getString("resolution", "1080p");
-        this.sizeLimit = call.getLong("sizeLimit", 0L);
+        Integer fpsOpt = call.getInt("fps");
+        this.videoFrameRate = (fpsOpt != null) ? fpsOpt : 240;
+
+        String resOpt = call.getString("resolution");
+        String resolution = (resOpt != null) ? resOpt : "1080p";
+
+        Long sizeOpt = call.getLong("sizeLimit");
+        this.sizeLimit = (sizeOpt != null) ? sizeOpt : 0L;
 
         Log.d(TAG, "start Recording Params:");
         Log.d(TAG, " --> fps: " + videoFrameRate);
@@ -504,7 +508,7 @@ public class TpaCameraPlugin extends Plugin {
                     if (stopButton != null)
                         stopButton.setVisibility(View.GONE);
                     pauseButton.setImageResource(R.drawable.start); // Resume icon
-                } else if (isRecording && isPaused) {
+                } else if (isRecording) {
                     // Resuming
                     resumeRecording(); // Call resumeRecording method
                     if (stopButton != null)
@@ -795,9 +799,7 @@ public class TpaCameraPlugin extends Plugin {
     }
 
     private void cleanupResources() {
-        if (timerHandler != null) {
-            timerHandler.removeCallbacks(timerRunnable);
-        }
+        timerHandler.removeCallbacks(timerRunnable);
         Log.d(TAG, "cleanupResources() called");
         try {
             if (captureSession != null) {
@@ -995,7 +997,7 @@ public class TpaCameraPlugin extends Plugin {
         if (mediaRecorder == null) {
             Log.e(TAG, "startRecordingInternal: MediaRecorder is null");
             rejectIfPossible("MediaRecorder is null, cannot start recording");
-            getActivity().runOnUiThread(() -> cleanupResources());
+            getActivity().runOnUiThread(this::cleanupResources);
             return;
         }
 
@@ -1020,11 +1022,11 @@ public class TpaCameraPlugin extends Plugin {
         } catch (IllegalStateException e) {
             Log.e(TAG, "Failed to start MediaRecorder", e);
             rejectIfPossible("Failed to start recording: MediaRecorder error");
-            getActivity().runOnUiThread(() -> cleanupResources());
+            getActivity().runOnUiThread(this::cleanupResources);
         } catch (Exception e) {
             Log.e(TAG, "Unexpected error in startRecordingInternal", e);
             rejectIfPossible("Failed to start recording: " + e.getMessage());
-            getActivity().runOnUiThread(() -> cleanupResources());
+            getActivity().runOnUiThread(this::cleanupResources);
         }
     }
 
@@ -1074,7 +1076,7 @@ public class TpaCameraPlugin extends Plugin {
         } catch (Exception e) {
             rejectIfPossible("Failed to stop recording: " + e.getMessage());
         } finally {
-            getActivity().runOnUiThread(() -> cleanupResources()); // safe
+            getActivity().runOnUiThread(this::cleanupResources);
         }
     }
 
@@ -1194,7 +1196,7 @@ public class TpaCameraPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         stopBackgroundThread();
-        getActivity().runOnUiThread(() -> cleanupResources());
+        getActivity().runOnUiThread(this::cleanupResources);
     }
 
     private void stopBackgroundThread() {
