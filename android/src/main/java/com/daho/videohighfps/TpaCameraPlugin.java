@@ -87,6 +87,9 @@ public class TpaCameraPlugin extends Plugin {
     private View blackPlaceholder;
     private final Object cameraLock = new Object();
 
+    // ONNX
+    private onnxPreChecking preCheck;
+
     private final Handler timerHandler = new Handler();
     private final Runnable timerRunnable = new Runnable() {
         @Override
@@ -128,6 +131,11 @@ public class TpaCameraPlugin extends Plugin {
         Log.d(TAG, " --> fps: " + videoFrameRate);
         Log.d(TAG, " --> sizeLimit: " + sizeLimit);
         Log.d(TAG, " --> resolution: " + resolution);
+
+        if (preCheck == null) {
+            preCheck = new onnxPreChecking(getContext());
+            preCheck.sayTooDarkWarning();
+        }
 
         try {
             // Full reset before reusing
@@ -876,6 +884,10 @@ public class TpaCameraPlugin extends Plugin {
 
         } catch (Exception e) {
             Log.e(TAG, "Unhandled error during cleanupResources..", e);
+        }
+
+        if (preCheck != null) {
+            preCheck.cleanup();
         }
     }
 
