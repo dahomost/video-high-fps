@@ -133,17 +133,20 @@ public class TpaCameraPlugin extends Plugin {
         Log.d(TAG, " --> sizeLimit: " + sizeLimit);
         Log.d(TAG, " --> resolution: " + resolution);
 
-
-        // ONNX: Check brightness and give TTS feedback
+        // ONNX: Check & TTS feedback
+        // ------------------------------------------
         if (preCheck == null) {
             preCheck = new onnxPreChecking(getContext());
 
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
                 if (textureView != null && textureView.isAvailable()) {
-                    preCheck.checkLighting(textureView);
+                    preCheck.checkLighting(textureView); // ✅ Step 1: brightness
+
+                    preCheck.checkFacePosition(textureView); // ✅ Step 2: face detection
                 }
-            }, 1000); // Wait 1 second for preview to appear
+            }, 1500); // Slight delay for camera to settle
         }
+        // ------------------------------------------
 
         try {
             // Full reset before reusing

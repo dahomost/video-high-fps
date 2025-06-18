@@ -47,7 +47,7 @@ android {
 }
 
 repositories {
-    google()
+    google() // Required for ML Kit
     mavenCentral()
 }
 
@@ -55,11 +55,17 @@ dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
     implementation project(':capacitor-android')
 
-    // Required for MediaRecorder and Camera2 API
+    // Camera and UI
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 
+    // ML Kit Face Detection + Core (Fixes import issues)
+    implementation 'com.google.mlkit:face-detection:16.1.5'
+    implementation 'com.google.mlkit:vision-common:17.3.0'
+    implementation 'com.google.mlkit:vision-common:17.3.0'
+    implementation 'com.google.android.gms:play-services-mlkit-face-detection:16.1.5'
+    
     // Unit Testing
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"

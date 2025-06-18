@@ -3,6 +3,7 @@ package com.daho.videohighfps;
 import android.content.Context;
 import android.media.AudioManager;
 import android.media.ToneGenerator;
+import android.os.Looper;
 import android.speech.tts.TextToSpeech;
 import android.util.Log;
 import android.os.Handler;
@@ -29,16 +30,24 @@ public class FeedbackHelper {
         });
     }
 
-    public void speakWithBeeps(String message, int beepCount) {
+    public void speakWithBeeps(String message, int beepCount, long delayAfterTtsMs, Runnable afterTtsAction) {
         if (ttsReady) {
-            // Beep first, then speak after delay
-            new Handler().post(() -> {
+            new Handler(Looper.getMainLooper()).post(() -> {
                 playBeeps(beepCount);
 
-                // Slight delay after last beep
-                new Handler().postDelayed(() -> {
+                // Delay after beeps before speaking
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
                     Log.d(TAG, "Speaking via TTS: " + message);
                     tts.speak(message, TextToSpeech.QUEUE_FLUSH, null, "ttsId");
+
+                    // Estimate duration and post callback
+                    int estimatedTtsDuration = message.length() * 50; // ~50ms per character
+                    new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                        if (afterTtsAction != null) {
+                            afterTtsAction.run();
+                        }
+                    }, estimatedTtsDuration + delayAfterTtsMs);
+
                 }, 300); // Delay after beep before TTS
             });
         } else {
