@@ -15,6 +15,7 @@ import android.media.MediaRecorder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 import android.util.Range;
@@ -132,9 +133,16 @@ public class TpaCameraPlugin extends Plugin {
         Log.d(TAG, " --> sizeLimit: " + sizeLimit);
         Log.d(TAG, " --> resolution: " + resolution);
 
+
+        // ONNX: Check brightness and give TTS feedback
         if (preCheck == null) {
             preCheck = new onnxPreChecking(getContext());
-            preCheck.sayTooDarkWarning();
+
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                if (textureView != null && textureView.isAvailable()) {
+                    preCheck.checkLighting(textureView);
+                }
+            }, 1000); // Wait 1 second for preview to appear
         }
 
         try {
@@ -886,6 +894,7 @@ public class TpaCameraPlugin extends Plugin {
             Log.e(TAG, "Unhandled error during cleanupResources..", e);
         }
 
+        // ONNX
         if (preCheck != null) {
             preCheck.cleanup();
         }

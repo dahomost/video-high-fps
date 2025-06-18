@@ -5,7 +5,7 @@ import android.media.AudioManager;
 import android.media.ToneGenerator;
 import android.speech.tts.TextToSpeech;
 import android.util.Log;
-
+import android.os.Handler;
 import java.util.Locale;
 
 public class FeedbackHelper {
@@ -13,7 +13,7 @@ public class FeedbackHelper {
     private TextToSpeech tts;
     private final Context context;
     private boolean ttsReady = false;
-    private static final String TAG = "FeedbackHelper";
+    private static final String TAG = "ONNX";
 
     public FeedbackHelper(Context context) {
         this.context = context;
@@ -30,12 +30,19 @@ public class FeedbackHelper {
     }
 
     public void speakWithBeeps(String message, int beepCount) {
-        playBeeps(beepCount);
-
         if (ttsReady) {
-            tts.speak(message, TextToSpeech.QUEUE_FLUSH, null, "ttsId");
+            // Beep first, then speak after delay
+            new Handler().post(() -> {
+                playBeeps(beepCount);
+
+                // Slight delay after last beep
+                new Handler().postDelayed(() -> {
+                    Log.d(TAG, "Speaking via TTS: " + message);
+                    tts.speak(message, TextToSpeech.QUEUE_FLUSH, null, "ttsId");
+                }, 300); // Delay after beep before TTS
+            });
         } else {
-            Log.w(TAG, "TTS not ready, message skipped: " + message);
+            Log.w(TAG, "TTS not ready, skipping speech: " + message);
         }
     }
 
