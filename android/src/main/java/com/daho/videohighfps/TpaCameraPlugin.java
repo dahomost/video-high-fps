@@ -103,7 +103,7 @@ public class TpaCameraPlugin extends Plugin {
 
     @PluginMethod
     public void startRecording(PluginCall call) {
-        Log.d(TAG, "-> startRecording(PluginCall call) is called . . . . . . . .");
+        Log.d(TAG, "-> startRecording(PluginCall call) is called");
 
         this.storedCall = call;
         this.cameraManager = (CameraManager) getContext().getSystemService(Context.CAMERA_SERVICE);
@@ -115,9 +115,9 @@ public class TpaCameraPlugin extends Plugin {
 
         Log.d(TAG, "  startRecording -> Permission granted...");
 
-        // Read and log incoming options
-        this.videoFrameRate = call.getInt("fps", 240);
-        String resolution = call.getString("resolution", "fhd");
+        // Read parameters
+        this.videoFrameRate = 30; // call.getInt("fps", 240);
+        String resolution = "1080p"; // call.getString("resolution", "fhd");
         this.sizeLimit = call.getLong("sizeLimit", 0L);
 
         Log.d(TAG, "[startRecording] Params:");
@@ -126,24 +126,30 @@ public class TpaCameraPlugin extends Plugin {
         Log.d(TAG, " - resolution: " + resolution);
 
         try {
-            // 🧠 Restart background thread and clear old state
+            // 🧼 Full reset before reusing
+            cleanupResources();
+            stopBackgroundThread();
+
+            // 🎬 Start fresh
             startBackgroundThread();
             cameraDevice = null;
             captureSession = null;
+            mediaRecorder = null;
+            isRecording = false;
+            isPaused = false;
 
-            // Automatically select best supported configuration
             this.selectedCameraId = getPreferredCameraId();
             selectOptimalConfiguration(resolution, videoFrameRate);
 
             getActivity().runOnUiThread(() -> {
                 try {
-                    showCameraPreview(); // creates textureView, overlay
+                    showCameraPreview();
 
-                    // Hide Ionic WebView manually
+                    // Hide WebView for native fullscreen
                     View webView = getBridge().getWebView();
                     if (webView != null) {
                         webView.setVisibility(View.GONE);
-                        Log.d(TAG, "WebView hidden for full-screen native recording");
+                        Log.d(TAG, "WebView hidden for native camera mode");
                     }
                 } catch (Exception e) {
                     rejectIfPossible(e.getMessage());
@@ -151,20 +157,22 @@ public class TpaCameraPlugin extends Plugin {
             });
 
         } catch (Exception e) {
-            Log.e(TAG, "Failed to start recording", e);
+            Log.e(TAG, "Failed to startRecording()", e);
             cleanupResources();
+            stopBackgroundThread();
             call.reject("Failed to start recording: " + e.getMessage());
 
-            // Restore Ionic WebView manually
+            // Try restoring WebView
             getActivity().runOnUiThread(() -> {
                 try {
                     View webView = getBridge().getWebView();
                     if (webView != null) {
                         webView.setVisibility(View.VISIBLE);
-                        Log.d(TAG, "WebView restored after error");
+                        fadeTo(webView, 1f, 200);
+                        Log.d(TAG, "WebView restored after error in startRecording");
                     }
                 } catch (Exception ex) {
-                    Log.e(TAG, "Failed to restore WebView", ex);
+                    Log.e(TAG, "Failed to restore WebView after error", ex);
                 }
             });
         }
@@ -991,19 +999,23 @@ public class TpaCameraPlugin extends Plugin {
     }
 
     private void startRecordingInternal() {
-        if (isRecording)
+        Log.d(TAG, "startRecordingInternal() called");
+
+        if (isRecording) {
+            Log.w(TAG, "startRecordingInternal: already recording, skipping");
             return;
+        }
+
+        if (mediaRecorder == null) {
+            Log.e(TAG, "startRecordingInternal: MediaRecorder is null");
+            rejectIfPossible("MediaRecorder is null, cannot start recording");
+            cleanupResources();
+            return;
+        }
 
         try {
-
-            if (mediaRecorder == null) {
-                rejectIfPossible("MediaRecorder is null, cannot start recording - MediaRecorder not initialized");
-                cleanupResources();
-                return;
-            }
-
             mediaRecorder.start();
-            SystemClock.sleep(50); // Wait 50ms to ensure internal encoder is ready
+            SystemClock.sleep(50); // ensure encoder is ready
 
             isRecording = true;
             isPaused = false;
@@ -1017,7 +1029,14 @@ public class TpaCameraPlugin extends Plugin {
                 backButton.setVisibility(View.GONE);
             });
 
+            Log.d(TAG, "Recording started successfully");
+
+        } catch (IllegalStateException e) {
+            Log.e(TAG, "Failed to start MediaRecorder", e);
+            rejectIfPossible("Failed to start recording: MediaRecorder error");
+            cleanupResources();
         } catch (Exception e) {
+            Log.e(TAG, "Unexpected error in startRecordingInternal", e);
             rejectIfPossible("Failed to start recording: " + e.getMessage());
             cleanupResources();
         }
@@ -1113,27 +1132,37 @@ public class TpaCameraPlugin extends Plugin {
 
     private void cancelRecording() {
         Log.d(TAG, "x - cancelRecording() triggered");
+
         try {
-            if (!isRecording) {
-                Log.w(TAG, "Cancel called but recording was not in progress");
-                return;
+            // Only attempt stop if recording actually started
+            if (isRecording && mediaRecorder != null) {
+                try {
+                    mediaRecorder.stop();
+                    Log.d(TAG, "MediaRecorder stopped safely on cancel");
+                } catch (IllegalStateException e) {
+                    Log.w(TAG, "MediaRecorder.stop() failed - not in recording state", e);
+                }
             }
 
-            if (mediaRecorder != null) {
-                mediaRecorder.stop();
-            }
-
-            rejectIfPossible("Recording canceled by user");
+            rejectIfPossible("Recording canceled by the user, this is ok.");
 
         } catch (Exception e) {
+            Log.e(TAG, "Unexpected error canceling recording", e);
             rejectIfPossible("Error canceling recording: " + e.getMessage());
         } finally {
+            // 💡 Fully cleanup + reset state
             cleanupResources();
+            stopBackgroundThread(); // shut down camera thread
+            isRecording = false;
+            isPaused = false;
+            storedCall = null;
 
-            // Restore WebView visibility to avoid blank screen
+            // ✅ Bring back WebView cleanly
             if (bridge != null && bridge.getWebView() != null) {
-                bridge.getWebView().setVisibility(View.VISIBLE);
-                fadeTo(bridge.getWebView(), 1f, 200);
+                View webView = bridge.getWebView();
+                webView.setVisibility(View.VISIBLE);
+                fadeTo(webView, 1f, 200);
+                Log.d(TAG, "WebView restored after cancel");
             }
         }
     }
