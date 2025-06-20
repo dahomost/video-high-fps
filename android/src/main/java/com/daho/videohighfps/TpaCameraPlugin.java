@@ -104,6 +104,10 @@ public class TpaCameraPlugin extends Plugin {
         }
     };
 
+    // Pose check loop
+    private final Handler poseCheckHandler = new Handler();
+    private Runnable poseCheckRunnable;
+
     @PluginMethod
     public void startRecording(PluginCall call) {
         Log.d(TAG, "startRecording(PluginCall call) is called");
@@ -133,27 +137,23 @@ public class TpaCameraPlugin extends Plugin {
         Log.d(TAG, " --> sizeLimit: " + sizeLimit);
         Log.d(TAG, " --> resolution: " + resolution);
 
-        // ONNX: Check & TTS feedback
-        // ------------------------------------------
+        // ONNX: Only lighting check
+        // -------------------------------------------------
         if (preCheck == null) {
             preCheck = new onnxPreChecking(getContext());
 
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
                 if (textureView != null && textureView.isAvailable()) {
-                    preCheck.checkLighting(textureView); // ✅ Step 1: brightness
-
-                    preCheck.checkFacePosition(textureView); // ✅ Step 2: face detection
+                    preCheck.checkLighting(textureView); // Lighting only
                 }
-            }, 1500); // Slight delay for camera to settle
+            }, 1500);
         }
-        // ------------------------------------------
+        // -------------------------------------------------
 
         try {
-            // Full reset before reusing
             cleanupResources();
             stopBackgroundThread();
 
-            // Start fresh
             startBackgroundThread();
             cameraDevice = null;
             captureSession = null;
@@ -168,7 +168,6 @@ public class TpaCameraPlugin extends Plugin {
                 try {
                     showCameraPreview();
 
-                    // Hide WebView for native fullscreen
                     View webView = getBridge().getWebView();
                     if (webView != null) {
                         webView.setVisibility(View.GONE);
@@ -179,13 +178,28 @@ public class TpaCameraPlugin extends Plugin {
                 }
             });
 
+            // Pose check loop
+            poseCheckRunnable = new Runnable() {
+                @Override
+                public void run() {
+                    if (textureView != null && textureView.isAvailable() && preCheck != null) {
+                        preCheck.checkPoseAndMaybeStartRecording(textureView, () -> {
+                            Log.d(TAG, "✅ Pose confirmed — Starting recording...");
+                            poseCheckHandler.removeCallbacks(poseCheckRunnable);
+                            startRecordingInternal();
+                        });
+                    }
+                    poseCheckHandler.postDelayed(this, 2000);
+                }
+            };
+            poseCheckHandler.postDelayed(poseCheckRunnable, 1500);
+
         } catch (Exception e) {
             Log.e(TAG, "Failed to startRecording()", e);
             cleanupResources();
             stopBackgroundThread();
             call.reject("Failed to start recording: " + e.getMessage());
 
-            // Try restoring WebView
             getActivity().runOnUiThread(() -> {
                 try {
                     View webView = getBridge().getWebView();
@@ -412,6 +426,13 @@ public class TpaCameraPlugin extends Plugin {
         textureView.setAlpha(0f); // hidden initially
         textureView.setKeepScreenOn(true); // prevent screen from sleeping
         overlay.addView(textureView);
+
+        // 🆕 Grid Overlay added just after textureView
+        GridOverlay gridOverlay = new GridOverlay(activity);
+        gridOverlay.setLayoutParams(new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        overlay.addView(gridOverlay);
 
         // Timer
         timerView = new TextView(activity);
@@ -1235,4 +1256,53 @@ public class TpaCameraPlugin extends Plugin {
             backgroundHandler = null;
         }
     }
+
+    // -------------------------------------------- pose
+
+    public void checkPoseAndMaybeStartRecording(TextureView textureView, Runnable onConfirmed) {
+        if (textureView == null || !textureView.isAvailable()) {
+            Log.w(TAG, "TextureView not available for pose check");
+            return;
+        }
+
+        Bitmap bitmap = textureView.getBitmap(480, 480);
+        if (bitmap == null) {
+            Log.w(TAG, "Failed to get bitmap from TextureView");
+            return;
+        }
+
+        InputImage image = InputImage.fromBitmap(bitmap, 0);
+
+        PoseDetectorOptions options = new PoseDetectorOptions.Builder()
+                .setDetectorMode(PoseDetectorOptions.SINGLE_IMAGE_MODE)
+                .build();
+
+        PoseDetector poseDetector = PoseDetection.getClient(options);
+
+        poseDetector.process(image)
+                .addOnSuccessListener(pose -> {
+                    List<PoseLandmark> landmarks = pose.getAllPoseLandmarks();
+                    if (landmarks == null || landmarks.isEmpty()) {
+                        sayFaceNotFound();
+                        return;
+                    }
+
+                    Rect box = getBoundingBoxFromPose(landmarks);
+                    int frameWidth = bitmap.getWidth();
+                    int frameHeight = bitmap.getHeight();
+
+                    Log.d(TAG, "Pose bounding box: " + box + " — Frame size: " + frameWidth + "x" + frameHeight);
+
+                    if (!isInsideCenterGrid(box, frameWidth, frameHeight)) {
+                        sayCenterYourselfWarning();
+                    } else {
+                        sayFaceOK();
+                        onConfirmed.run(); // ✅ Start recording!
+                    }
+                })
+                .addOnFailureListener(e -> {
+                    Log.e(TAG, "Pose detection failed", e);
+                });
+    }
+
 }
