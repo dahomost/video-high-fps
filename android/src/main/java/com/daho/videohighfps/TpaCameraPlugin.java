@@ -105,8 +105,8 @@ public class TpaCameraPlugin extends Plugin {
     };
 
     // Pose check loop
-    private final Handler poseCheckHandler = new Handler();
-    private Runnable poseCheckRunnable;
+    // private final Handler poseCheckHandler = new Handler();
+    // private Runnable poseCheckRunnable;
 
     @PluginMethod
     public void startRecording(PluginCall call) {
@@ -145,7 +145,11 @@ public class TpaCameraPlugin extends Plugin {
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
                 if (textureView != null && textureView.isAvailable()) {
                     preCheck.checkLighting(textureView); // Lighting only
+
+                    preCheck.checkFacePosition(textureView);
+
                 }
+
             }, 1500);
         }
         // -------------------------------------------------
@@ -178,21 +182,21 @@ public class TpaCameraPlugin extends Plugin {
                 }
             });
 
-            // Pose check loop
-            poseCheckRunnable = new Runnable() {
-                @Override
-                public void run() {
-                    if (textureView != null && textureView.isAvailable() && preCheck != null) {
-                        preCheck.checkPoseAndMaybeStartRecording(textureView, () -> {
-                            Log.d(TAG, "✅ Pose confirmed — Starting recording...");
-                            poseCheckHandler.removeCallbacks(poseCheckRunnable);
-                            startRecordingInternal();
-                        });
-                    }
-                    poseCheckHandler.postDelayed(this, 2000);
-                }
-            };
-            poseCheckHandler.postDelayed(poseCheckRunnable, 1500);
+            // Pose check loop-----------------------------------
+            // poseCheckRunnable = new Runnable() {
+            // @Override
+            // public void run() {
+            // if (textureView != null && textureView.isAvailable() && preCheck != null) {
+            // preCheck.checkPoseAndMaybeStartRecording(textureView, () -> {
+            // Log.d(TAG, "✅ Pose confirmed — Starting recording...");
+            // poseCheckHandler.removeCallbacks(poseCheckRunnable);
+            // startRecordingInternal();
+            // });
+            // }
+            // poseCheckHandler.postDelayed(this, 2000);
+            // }
+            // };
+            // poseCheckHandler.postDelayed(poseCheckRunnable, 1500);
 
         } catch (Exception e) {
             Log.e(TAG, "Failed to startRecording()", e);
@@ -1259,50 +1263,52 @@ public class TpaCameraPlugin extends Plugin {
 
     // -------------------------------------------- pose
 
-    public void checkPoseAndMaybeStartRecording(TextureView textureView, Runnable onConfirmed) {
-        if (textureView == null || !textureView.isAvailable()) {
-            Log.w(TAG, "TextureView not available for pose check");
-            return;
-        }
-
-        Bitmap bitmap = textureView.getBitmap(480, 480);
-        if (bitmap == null) {
-            Log.w(TAG, "Failed to get bitmap from TextureView");
-            return;
-        }
-
-        InputImage image = InputImage.fromBitmap(bitmap, 0);
-
-        PoseDetectorOptions options = new PoseDetectorOptions.Builder()
-                .setDetectorMode(PoseDetectorOptions.SINGLE_IMAGE_MODE)
-                .build();
-
-        PoseDetector poseDetector = PoseDetection.getClient(options);
-
-        poseDetector.process(image)
-                .addOnSuccessListener(pose -> {
-                    List<PoseLandmark> landmarks = pose.getAllPoseLandmarks();
-                    if (landmarks == null || landmarks.isEmpty()) {
-                        sayFaceNotFound();
-                        return;
-                    }
-
-                    Rect box = getBoundingBoxFromPose(landmarks);
-                    int frameWidth = bitmap.getWidth();
-                    int frameHeight = bitmap.getHeight();
-
-                    Log.d(TAG, "Pose bounding box: " + box + " — Frame size: " + frameWidth + "x" + frameHeight);
-
-                    if (!isInsideCenterGrid(box, frameWidth, frameHeight)) {
-                        sayCenterYourselfWarning();
-                    } else {
-                        sayFaceOK();
-                        onConfirmed.run(); // ✅ Start recording!
-                    }
-                })
-                .addOnFailureListener(e -> {
-                    Log.e(TAG, "Pose detection failed", e);
-                });
-    }
+    // public void checkPoseAndMaybeStartRecording(TextureView textureView, Runnable
+    // onConfirmed) {
+    // if (textureView == null || !textureView.isAvailable()) {
+    // Log.w(TAG, "TextureView not available for pose check");
+    // return;
+    // }
+    //
+    // Bitmap bitmap = textureView.getBitmap(480, 480);
+    // if (bitmap == null) {
+    // Log.w(TAG, "Failed to get bitmap from TextureView");
+    // return;
+    // }
+    //
+    // InputImage image = InputImage.fromBitmap(bitmap, 0);
+    //
+    // PoseDetectorOptions options = new PoseDetectorOptions.Builder()
+    // .setDetectorMode(PoseDetectorOptions.SINGLE_IMAGE_MODE)
+    // .build();
+    //
+    // PoseDetector poseDetector = PoseDetection.getClient(options);
+    //
+    // poseDetector.process(image)
+    // .addOnSuccessListener(pose -> {
+    // List<PoseLandmark> landmarks = pose.getAllPoseLandmarks();
+    // if (landmarks == null || landmarks.isEmpty()) {
+    // sayFaceNotFound();
+    // return;
+    // }
+    //
+    // Rect box = getBoundingBoxFromPose(landmarks);
+    // int frameWidth = bitmap.getWidth();
+    // int frameHeight = bitmap.getHeight();
+    //
+    // Log.d(TAG, "Pose bounding box: " + box + " — Frame size: " + frameWidth + "x"
+    // + frameHeight);
+    //
+    // if (!isInsideCenterGrid(box, frameWidth, frameHeight)) {
+    // sayCenterYourselfWarning();
+    // } else {
+    // sayFaceOK();
+    // onConfirmed.run(); // ✅ Start recording!
+    // }
+    // })
+    // .addOnFailureListener(e -> {
+    // Log.e(TAG, "Pose detection failed", e);
+    // });
+    // }
 
 }

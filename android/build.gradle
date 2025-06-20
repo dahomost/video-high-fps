@@ -60,10 +60,9 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 
-        // ML Kit Face Detection + Core (Fixes import issues)
-    implementation 'com.google.mlkit:vision-common:17.3.0'
-    implementation 'com.google.mlkit:pose-detection:19.1.0' // Pose detection
+    // ML Kit Face Detection + Core (Fixes import issues)
     implementation 'com.google.mlkit:face-detection:16.1.5' // Optional
+    implementation 'com.google.mlkit:vision-common:17.3.0'
     implementation 'com.google.android.gms:play-services-mlkit-face-detection:16.1.5' // Optional
 
     // Unit Testing

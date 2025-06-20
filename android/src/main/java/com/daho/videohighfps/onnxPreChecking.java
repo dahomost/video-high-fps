@@ -9,10 +9,10 @@ import android.graphics.Rect;
 import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.face.*;
 
-import com.google.mlkit.vision.pose.Pose;
-import com.google.mlkit.vision.pose.PoseLandmark;
-import com.google.mlkit.vision.pose.PoseDetector;
-import com.google.mlkit.vision.pose.PoseDetectorOptions;
+// import com.google.mlkit.vision.pose.Pose;
+// import com.google.mlkit.vision.pose.PoseLandmark;
+// import com.google.mlkit.vision.pose.PoseDetector;
+// import com.google.mlkit.vision.pose.PoseDetectorOptions;
 import java.util.List;
 
 public class onnxPreChecking {
@@ -159,74 +159,81 @@ public class onnxPreChecking {
                 .addOnFailureListener(e -> Log.e(TAG, "Face detection failed", e));
     }
 
-    public void checkPoseAndMaybeStartRecording(TextureView textureView, Runnable onCenteredAndReady) {
-        if (textureView == null || !textureView.isAvailable()) {
-            Log.w(TAG, "TextureView not available for pose check");
-            return;
-        }
+// -----------------pose
 
-        Bitmap bitmap = textureView.getBitmap();
-        if (bitmap == null) {
-            Log.w(TAG, "Failed to capture bitmap from TextureView");
-            return;
-        }
+// public void checkPoseAndMaybeStartRecording(TextureView textureView, Runnable
+// onCenteredAndReady) {
+// if (textureView == null || !textureView.isAvailable()) {
+// Log.w(TAG, "TextureView not available for pose check");
+// return;
+// }
 
-        InputImage image = InputImage.fromBitmap(bitmap, 0);
+// Bitmap bitmap = textureView.getBitmap();
+// if (bitmap == null) {
+// Log.w(TAG, "Failed to capture bitmap from TextureView");
+// return;
+// }
 
-        PoseDetectorOptions options = new PoseDetectorOptions.Builder()
-                .setDetectorMode(PoseDetectorOptions.SINGLE_IMAGE_MODE)
-                .build();
+// InputImage image = InputImage.fromBitmap(bitmap, 0);
 
-        PoseDetector detector = PoseDetection.getClient(options);
+// PoseDetectorOptions options = new PoseDetectorOptions.Builder()
+// .setDetectorMode(PoseDetectorOptions.SINGLE_IMAGE_MODE)
+// .build();
 
-        detector.process(image)
-                .addOnSuccessListener(pose -> {
-                    List<PoseLandmark> landmarks = pose.getAllPoseLandmarks();
-                    if (landmarks.isEmpty()) {
-                        feedbackHelper.speakWithBeeps("Body not detected... Please stand in front of the camera.", 2,
-                                500, null);
-                        return;
-                    }
+// PoseDetector detector = PoseDetection.getClient(options);
 
-                    Rect personBox = getBoundingBoxFromPose(landmarks);
-                    int viewWidth = textureView.getWidth();
-                    int viewHeight = textureView.getHeight();
+// detector.process(image)
+// .addOnSuccessListener(pose -> {
+// List<PoseLandmark> landmarks = pose.getAllPoseLandmarks();
+// if (landmarks.isEmpty()) {
+// feedbackHelper.speakWithBeeps("Body not detected... Please stand in front of
+// the camera.", 2,
+// 500, null);
+// return;
+// }
 
-                    if (isInsideCenterGrid(personBox, viewWidth, viewHeight)) {
-                        feedbackHelper.speakWithBeeps("You're in the center... Three... Two... One... Go.", 3, 500,
-                                onCenteredAndReady);
-                    } else {
-                        feedbackHelper.speakWithBeeps("You're not centered... Please adjust yourself.", 2, 500, null);
-                    }
-                })
-                .addOnFailureListener(e -> {
-                    Log.e(TAG, "Pose detection failed", e);
-                });
-    }
+// Rect personBox = getBoundingBoxFromPose(landmarks);
+// int viewWidth = textureView.getWidth();
+// int viewHeight = textureView.getHeight();
 
-    private boolean isInsideCenterGrid(Rect box, int width, int height) {
-        int cellWidth = width / 3;
-        int cellHeight = height / 3;
+// if (isInsideCenterGrid(personBox, viewWidth, viewHeight)) {
+// feedbackHelper.speakWithBeeps("You're in the center... Three... Two... One...
+// Go.", 3, 500,
+// onCenteredAndReady);
+// } else {
+// feedbackHelper.speakWithBeeps("You're not centered... Please adjust
+// yourself.", 2, 500, null);
+// }
+// })
+// .addOnFailureListener(e -> {
+// Log.e(TAG, "Pose detection failed", e);
+// });
+// }
 
-        Rect centerGrid = new Rect(cellWidth, cellHeight, 2 * cellWidth, 2 * cellHeight);
-        return centerGrid.contains(box);
-    }
+// private boolean isInsideCenterGrid(Rect box, int width, int height) {
+// int cellWidth = width / 3;
+// int cellHeight = height / 3;
 
-    private Rect getBoundingBoxFromPose(List<PoseLandmark> landmarks) {
-        int left = Integer.MAX_VALUE;
-        int top = Integer.MAX_VALUE;
-        int right = Integer.MIN_VALUE;
-        int bottom = Integer.MIN_VALUE;
+// Rect centerGrid = new Rect(cellWidth, cellHeight, 2 * cellWidth, 2 *
+// cellHeight);
+// return centerGrid.contains(box);
+// }
 
-        for (PoseLandmark landmark : landmarks) {
-            float x = landmark.getPosition().x;
-            float y = landmark.getPosition().y;
-            left = Math.min(left, (int) x);
-            top = Math.min(top, (int) y);
-            right = Math.max(right, (int) x);
-            bottom = Math.max(bottom, (int) y);
-        }
+// private Rect getBoundingBoxFromPose(List<PoseLandmark> landmarks) {
+// int left = Integer.MAX_VALUE;
+// int top = Integer.MAX_VALUE;
+// int right = Integer.MIN_VALUE;
+// int bottom = Integer.MIN_VALUE;
 
-        return new Rect(left, top, right, bottom);
-    }
-}
+// for (PoseLandmark landmark : landmarks) {
+// float x = landmark.getPosition().x;
+// float y = landmark.getPosition().y;
+// left = Math.min(left, (int) x);
+// top = Math.min(top, (int) y);
+// right = Math.max(right, (int) x);
+// bottom = Math.max(bottom, (int) y);
+// }
+
+// return new Rect(left, top, right, bottom);
+// }
+ }
