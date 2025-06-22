@@ -9,6 +9,7 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
+import android.graphics.drawable.GradientDrawable;
 import android.hardware.camera2.*;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.MediaRecorder;
@@ -25,6 +26,7 @@ import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
@@ -382,6 +384,14 @@ public class TpaCameraPlugin extends Plugin {
         setupUI(); // Adds textureView and UI buttons
     }
 
+    /**
+     * Density-independent-pixels → physical pixels
+     */
+    private int dpToPx(Context ctx, int dp) {
+        float density = ctx.getResources().getDisplayMetrics().density;
+        return Math.round(dp * density);
+    }
+
     @SuppressLint("SetTextI18n")
     private void setupUI() {
         Activity activity = getActivity();
@@ -396,35 +406,42 @@ public class TpaCameraPlugin extends Plugin {
                 FrameLayout.LayoutParams.MATCH_PARENT));
         overlay.setBackgroundColor(0xFF000000);
 
-        // Black placeholder to prevent flash before TextureView is ready
+        // ── Black placeholder ─
         blackPlaceholder = new View(activity);
         blackPlaceholder.setLayoutParams(new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
         blackPlaceholder.setBackgroundColor(0xFF000000);
-        overlay.addView(blackPlaceholder); // Add first
+        overlay.addView(blackPlaceholder);
 
-        // TextureView
-        textureView.setAlpha(0f); // hidden initially
-        textureView.setKeepScreenOn(true); // prevent screen from sleeping
+        // ── TextureView ─
+        textureView.setAlpha(0f);
+        textureView.setKeepScreenOn(true);
         overlay.addView(textureView);
 
-        // Timer
+        // ── Timer label ─
         timerView = new TextView(activity);
         timerView.setText("00:00");
-        timerView.setTextSize(24);
+        timerView.setTextSize(12);
         timerView.setTextColor(0xFFFFFFFF);
-        timerView.setBackgroundColor(0xAA000000);
-        timerView.setPadding(20, 10, 20, 10);
+        timerView.setPadding(dpToPx(activity, 12), dpToPx(activity, 6),
+                dpToPx(activity, 12), dpToPx(activity, 6));
+
+        GradientDrawable timerBg = new GradientDrawable();
+        timerBg.setColor(0xAA000000); // semi-transparent black
+        timerBg.setCornerRadius(dpToPx(activity, 8)); // rounded corners
+        timerBg.setStroke(dpToPx(activity, 1), Color.GRAY); // gray outline
+        timerView.setBackground(timerBg);
+
         FrameLayout.LayoutParams timerParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        timerParams.setMargins(0, 50, 0, 0);
+        timerParams.setMargins(0, dpToPx(activity, 80), 0, 0);
         timerView.setLayoutParams(timerParams);
         overlay.addView(timerView);
 
-        // Buttons
+        // ── Buttons ─
         recordButton = createIconButton(R.drawable.start);
         pauseButton = createIconButton(R.drawable.pause);
         stopButton = createIconButton(R.drawable.stop);
@@ -433,21 +450,27 @@ public class TpaCameraPlugin extends Plugin {
         LinearLayout buttonsLayout = new LinearLayout(activity);
         buttonsLayout.setOrientation(LinearLayout.HORIZONTAL);
         buttonsLayout.setGravity(Gravity.CENTER);
+
         FrameLayout.LayoutParams buttonsParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        buttonsParams.setMargins(0, 0, 0, 60);
+        buttonsParams.setMargins(0, 0, 0, dpToPx(activity, 48));
         buttonsLayout.setLayoutParams(buttonsParams);
 
-        int buttonSize = 160;
-        LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(buttonSize, buttonSize);
-        buttonParams.setMargins(30, 0, 30, 0);
+        int buttonSizeDp = 48;
+        int spacingDp = 12;
 
-        recordButton.setLayoutParams(buttonParams);
-        backButton.setLayoutParams(buttonParams);
-        pauseButton.setLayoutParams(buttonParams);
-        stopButton.setLayoutParams(buttonParams);
+        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(
+                dpToPx(activity, buttonSizeDp),
+                dpToPx(activity, buttonSizeDp));
+        btnLp.setMargins(dpToPx(activity, spacingDp), 0,
+                dpToPx(activity, spacingDp), 0);
+
+        recordButton.setLayoutParams(btnLp);
+        backButton.setLayoutParams(btnLp);
+        pauseButton.setLayoutParams(btnLp);
+        stopButton.setLayoutParams(btnLp);
 
         buttonsLayout.addView(backButton);
         buttonsLayout.addView(recordButton);
@@ -456,6 +479,19 @@ public class TpaCameraPlugin extends Plugin {
 
         pauseButton.setVisibility(View.GONE);
         stopButton.setVisibility(View.GONE);
+
+        buttonsLayout.setOnApplyWindowInsetsListener((v, insets) -> {
+            int bottomInset = dpToPx(activity, 48);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                bottomInset += insets.getInsets(WindowInsets.Type.systemBars()).bottom;
+            } else {
+                bottomInset += insets.getSystemWindowInsetBottom();
+            }
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) buttonsLayout.getLayoutParams();
+            lp.setMargins(0, 0, 0, bottomInset);
+            buttonsLayout.setLayoutParams(lp);
+            return insets;
+        });
 
         overlay.addView(buttonsLayout);
 
