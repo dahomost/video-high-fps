@@ -51,7 +51,6 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-import android.graphics.Rect;
 
 @CapacitorPlugin(name = "TpaCamera", permissions = {
         @Permission(strings = {
@@ -128,6 +127,10 @@ public class TpaCameraPlugin extends Plugin {
         Log.d(TAG, " --> fps: " + videoFrameRate);
         Log.d(TAG, " --> sizeLimit: " + sizeLimit);
         Log.d(TAG, " --> resolution: " + resolution);
+        Log.d(TAG, " ==> Device Info:");
+        Log.d(TAG, "   - Manufacturer: " + Build.MANUFACTURER);
+        Log.d(TAG, "   - Model       : " + Build.MODEL);
+        Log.d(TAG, "   - Android API : " + Build.VERSION.SDK_INT + " (" + Build.VERSION.RELEASE + ")");
 
         try {
             // Full reset before reusing
@@ -212,79 +215,91 @@ public class TpaCameraPlugin extends Plugin {
             throw new IllegalStateException("Cannot access camera configuration");
         }
 
-        Size[] availableSizes = configMap.getOutputSizes(MediaRecorder.class);
-        Range<Integer>[] highSpeedRanges;
-
-        // Define preferred sizes based on input
-        Size preferredSize;
-        switch (resolution) {
-            case "4k":
-                preferredSize = new Size(3840, 2160);
-                break;
-            case "1080p":
-                preferredSize = new Size(1920, 1080);
-                break;
-            case "720p":
-            default:
-                preferredSize = new Size(1280, 720);
-                break;
+        // Log full capability matrix
+        Log.d(TAG, "Supported High-Speed Video Sizes and FPS Ranges:");
+        for (Size size : configMap.getHighSpeedVideoSizes()) {
+            try {
+                Range<Integer>[] ranges = configMap.getHighSpeedVideoFpsRangesFor(size);
+                for (Range<Integer> r : ranges) {
+                    Log.d(TAG, size.getWidth() + "x" + size.getHeight() + " @ " + r.getLower() + "–"
+                            + r.getUpper() + " fps");
+                }
+            } catch (IllegalArgumentException e) {
+                Log.w(TAG, size + " (not valid for high-speed)");
+            }
         }
 
-        // Try to use high-speed mode (≥120fps)
-        boolean useHighSpeed = requestedFps > 60;
-
-        // Fallback logic
+        Size[] availableSizes = configMap.getOutputSizes(MediaRecorder.class);
         selectedSize = null;
         videoFrameRate = 30;
 
-        if (useHighSpeed) {
-            try {
-                highSpeedRanges = configMap.getHighSpeedVideoFpsRangesFor(preferredSize);
-                for (Range<Integer> range : highSpeedRanges) {
-                    if (range.getLower() <= requestedFps && range.getUpper() >= requestedFps) {
-                        selectedSize = preferredSize;
-                        videoFrameRate = requestedFps;
-                        Log.d(TAG, "Using high-speed mode: " + selectedSize + " @" + videoFrameRate + "fps");
-                        return;
-                    }
-                }
-            } catch (IllegalArgumentException e) {
-                Log.w(TAG, "Requested size not valid for high-speed: " + preferredSize);
-            }
+        List<Integer> fallbackFpsList = Arrays.asList(240, 120, 60, 30);
+        List<Size> resolutionPriority = Arrays.asList(
+                new Size(1920, 1080), // Full HD
+                new Size(1280, 720) // HD
+        );
 
-            // Fallback to supported high-speed sizes
-            for (Size size : configMap.getHighSpeedVideoSizes()) {
-                highSpeedRanges = configMap.getHighSpeedVideoFpsRangesFor(size);
-                for (Range<Integer> range : highSpeedRanges) {
-                    int maxFps = range.getUpper();
-                    if (maxFps >= 120) {
-                        selectedSize = size;
-                        videoFrameRate = Math.min(requestedFps, maxFps);
-                        Log.w(TAG, "Fallback to high-speed: " + selectedSize + " @" + videoFrameRate + "fps");
-                        return;
+        // === Fallback Decision Trace ===
+        for (int targetFps : fallbackFpsList) {
+            for (Size size : resolutionPriority) {
+                Log.d(TAG, "Trying Fallback: " + size.getWidth() + "x" + size.getHeight() + " @ " + targetFps + "fps");
+
+                try {
+                    List<Size> supportedHighSpeedSizes = Arrays.asList(configMap.getHighSpeedVideoSizes());
+                    if (!supportedHighSpeedSizes.contains(size)) {
+                        Log.d(TAG, "Not in supportedHighSpeedSizes");
+                        continue;
                     }
+
+                    Range<Integer>[] ranges = configMap.getHighSpeedVideoFpsRangesFor(size);
+                    if (ranges == null) {
+                        Log.d(TAG, "No FPS range info");
+                        continue;
+                    }
+
+                    for (Range<Integer> range : ranges) {
+                        if (range.getLower() <= targetFps && range.getUpper() >= targetFps) {
+                            selectedSize = size;
+                            videoFrameRate = targetFps;
+                            Log.d(TAG, "Selected high-speed config: " + selectedSize + " @" + videoFrameRate + "fps");
+                            return;
+                        }
+                    }
+
+                    Log.d(TAG, "FPS " + targetFps + " not in supported range for this size");
+
+                } catch (IllegalArgumentException e) {
+                    Log.w(TAG, "IllegalArgumentException for size " + size + ": " + e.getMessage());
                 }
             }
-
-            Log.w(TAG, "No high-speed mode supported, falling back to standard recording.");
         }
 
-        // Standard fallback mode (≤60fps)
+        Log.w(TAG, "No high-speed config matched. Falling back to standard mode.");
+
+        Size preferredMax = resolution.equals("4k") ? new Size(3840, 2160)
+                : resolution.equals("1080p") ? new Size(1920, 1080)
+                        : new Size(1280, 720);
+
+        Size bestStandardSize = null;
         int bestArea = 0;
         for (Size size : availableSizes) {
             int area = size.getWidth() * size.getHeight();
-            if (area > bestArea && size.getWidth() <= preferredSize.getWidth()) {
-                selectedSize = size;
+            if (area > bestArea && size.getWidth() <= preferredMax.getWidth()) {
+                bestStandardSize = size;
                 bestArea = area;
             }
         }
 
-        if (selectedSize == null) {
-            selectedSize = availableSizes[0]; // last resort fallback
+        if (bestStandardSize != null) {
+            selectedSize = bestStandardSize;
+        } else if (availableSizes.length > 0) {
+            selectedSize = availableSizes[0];
+        } else {
+            throw new IllegalStateException("No valid MediaRecorder sizes available");
         }
 
-        videoFrameRate = Math.min(requestedFps, 60); // cap to 60fps in standard mode
-        Log.w(TAG, "Using standard mode fallback: " + selectedSize + " @" + videoFrameRate + "fps");
+        videoFrameRate = Math.min(requestedFps, 30);
+        Log.d(TAG, "Selected standard config: " + selectedSize + " @" + videoFrameRate + "fps");
     }
 
     private void startBackgroundThread() {
@@ -590,118 +605,165 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
-    private void startHighSpeedCaptureSession() throws Exception {
-        if (cameraDevice == null) {
-            rejectIfPossible("cameraDevice is null – aborting high-speed session setup");
-            return;
+    private void startHighSpeedCaptureSession() {
+        try {
+            if (cameraDevice == null) {
+                rejectIfPossible("cameraDevice is null – aborting high-speed session setup");
+                return;
+            }
+
+            CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
+            StreamConfigurationMap configMap = characteristics
+                    .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            if (configMap == null || configMap.getHighSpeedVideoSizes() == null) {
+                Log.w(TAG, "High-speed not supported, falling back to standard");
+                tryStandardSessionAgain();
+                return;
+            }
+
+            SurfaceTexture surfaceTexture = textureView.getSurfaceTexture();
+            if (surfaceTexture == null) {
+                throw new IllegalStateException("Surface texture not available");
+            }
+
+            surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
+            previewSurface = new Surface(surfaceTexture);
+
+            safeReleaseMediaRecorder();
+            setupMediaRecorder();
+            Surface recorderSurface = mediaRecorder.getSurface();
+
+            List<Surface> surfaces = Arrays.asList(previewSurface, recorderSurface);
+
+            cameraDevice.createConstrainedHighSpeedCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
+                @Override
+                public void onConfigured(@NonNull CameraCaptureSession session) {
+                    try {
+                        CameraConstrainedHighSpeedCaptureSession hsSession = (CameraConstrainedHighSpeedCaptureSession) session;
+
+                        CaptureRequest.Builder builder = cameraDevice
+                                .createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+                        builder.addTarget(previewSurface);
+                        builder.addTarget(recorderSurface);
+                        builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+                        builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                                new Range<>(videoFrameRate, videoFrameRate));
+
+                        hsSession.setRepeatingBurst(
+                                hsSession.createHighSpeedRequestList(builder.build()),
+                                null,
+                                backgroundHandler);
+
+                        captureSession = session;
+                        onPreviewSuccess(); // Handles fade-in + UI
+
+                    } catch (Exception e) {
+                        Log.e(TAG, "High-speed burst failed. Trying lower FPS fallback.", e);
+                        tryLowerFpsFallback();
+                    }
+                }
+
+                @Override
+                public void onConfigureFailed(@NonNull CameraCaptureSession session) {
+                    Log.e(TAG, "High-speed session configure failed. Trying lower FPS fallback.");
+                    tryLowerFpsFallback();
+                }
+            }, backgroundHandler);
+
+        } catch (Exception e) {
+            Log.e(TAG, "Exception during high-speed setup. Trying lower FPS fallback.", e);
+            tryLowerFpsFallback();
         }
+    }
 
-        CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
-        StreamConfigurationMap configMap = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-        if (configMap == null || configMap.getHighSpeedVideoSizes() == null) {
-            Log.w(TAG, "High-speed not supported, falling back to standard");
-            startStandardCaptureSession();
-            return;
-        }
-
-        SurfaceTexture surfaceTexture = textureView.getSurfaceTexture();
-        if (surfaceTexture == null) {
-            throw new IllegalStateException("Surface texture not available");
-        }
-
-        surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
-        previewSurface = new Surface(surfaceTexture);
-
-        safeReleaseMediaRecorder();
-
-        // Setup MediaRecorder AFTER surfaces are ready
-        setupMediaRecorder();
-        Surface recorderSurface = mediaRecorder.getSurface();
-        if (recorderSurface == null) {
-            throw new IllegalStateException("Recorder surface is null after prepare()");
-        }
-
-        List<Surface> surfaces = new ArrayList<>();
-        surfaces.add(previewSurface);
-        surfaces.add(recorderSurface);
-
-        cameraDevice.createConstrainedHighSpeedCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
-            @Override
-            public void onConfigured(@NonNull CameraCaptureSession session) {
-                if (cameraDevice == null) {
-                    rejectIfPossible("cameraDevice became null after session configuration");
-                    cleanupResources();
+    private void tryLowerFpsFallback() {
+        getActivity().runOnUiThread(() -> {
+            try {
+                CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
+                StreamConfigurationMap configMap = characteristics
+                        .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                if (configMap == null) {
+                    rejectIfPossible("❌ Cannot access camera configuration.");
+                    cleanupResources(); // ❗Only clean up if we abort
                     return;
                 }
 
-                captureSession = session;
+                List<Size> highSpeedSizes = Arrays.asList(configMap.getHighSpeedVideoSizes());
 
-                try {
-                    CameraConstrainedHighSpeedCaptureSession hsSession = (CameraConstrainedHighSpeedCaptureSession) session;
-
-                    CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-                    builder.addTarget(previewSurface);
-                    builder.addTarget(recorderSurface);
-                    builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-                    builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                            new Range<>(videoFrameRate, videoFrameRate));
-
-                    Rect sensorRect = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
-                    if (sensorRect == null) {
-                        Log.w(TAG, "Sensor info not available, using default crop");
-                        sensorRect = new Rect(0, 0, selectedSize.getWidth(), selectedSize.getHeight());
+                // === Resolution Fallback ===
+                if (selectedSize != null && selectedSize.getWidth() > 720) {
+                    Size fallbackSize = new Size(720, 480);
+                    if (highSpeedSizes.contains(fallbackSize)) {
+                        Log.w(TAG, "Resolution fallback: trying 720x480 @ " + videoFrameRate + "fps");
+                        selectedSize = fallbackSize;
+                        tryHighSpeedAgain();
+                        return;
+                    } else {
+                        Log.w(TAG, "720x480 not supported for high-speed. Skipping resolution fallback.");
                     }
-                    builder.set(CaptureRequest.SCALER_CROP_REGION, sensorRect);
-
-                    hsSession.setRepeatingBurst(
-                            hsSession.createHighSpeedRequestList(builder.build()),
-                            null,
-                            backgroundHandler);
-
-                    textureView.post(() -> {
-                        configureTransform(textureView.getWidth(), textureView.getHeight());
-                        fadeTo(textureView, 1f, 300); // Fade in
-
-                        if (blackPlaceholder != null) {
-                            blackPlaceholder.animate()
-                                    .alpha(0f)
-                                    .setDuration(200)
-                                    .withEndAction(() -> {
-                                        try {
-                                            overlay.removeView(blackPlaceholder);
-                                        } catch (Exception e) {
-                                            Log.e(TAG, "Failed to remove blackPlaceholder", e);
-                                        }
-                                    })
-                                    .start();
-                        }
-
-                        if (blackOverlayView != null) {
-                            ViewGroup root = (ViewGroup) getActivity().findViewById(android.R.id.content);
-                            root.removeView(blackOverlayView);
-                            blackOverlayView = null;
-                        }
-                    });
-
-                    getActivity().runOnUiThread(() -> {
-                        recordButton.setVisibility(View.VISIBLE);
-                        Toast.makeText(getContext(), "Ready: " + videoFrameRate + "fps " +
-                                selectedSize.getWidth() + "x" + selectedSize.getHeight(), Toast.LENGTH_SHORT).show();
-                    });
-
-                } catch (Exception e) {
-                    rejectIfPossible("Failed to start preview: " + e.getMessage());
-                    getActivity().runOnUiThread(() -> cleanupResources());
                 }
+
+                // === FPS Fallback ===
+                if (videoFrameRate >= 240) {
+                    Log.w(TAG, "240fps failed → trying 120fps...");
+                    videoFrameRate = 120;
+                    tryHighSpeedAgain();
+                } else if (videoFrameRate >= 120) {
+                    Log.w(TAG, "120fps failed → trying 60fps...");
+                    videoFrameRate = 60;
+                    tryStandardSessionAgain();
+                } else if (videoFrameRate >= 60) {
+                    Log.w(TAG, "60fps failed → trying 30fps...");
+                    videoFrameRate = 30;
+                    tryStandardSessionAgain();
+                } else {
+                    rejectIfPossible("All fallback attempts failed (fps & resolution)");
+                    cleanupResources();
+                }
+
+            } catch (CameraAccessException e) {
+                rejectIfPossible("Camera access error during fallback: " + e.getMessage());
+                cleanupResources();
+            }
+        });
+    }
+
+    private void tryHighSpeedAgain() {
+        try {
+            startHighSpeedCaptureSession();
+        } catch (Exception e) {
+            Log.w(TAG, "High-speed retry failed. Trying standard...", e);
+            tryStandardSessionAgain();
+        }
+    }
+
+    private void tryStandardSessionAgain() {
+        try {
+            startStandardCaptureSession();
+            Log.d(TAG, "Final fallback: standard session @ " + videoFrameRate + "fps");
+        } catch (Exception e) {
+            rejectIfPossible("❌ Standard fallback failed: " + e.getMessage());
+        }
+    }
+
+    private void onPreviewSuccess() {
+        Log.d(TAG, "Preview started successfully");
+
+        getActivity().runOnUiThread(() -> {
+            if (textureView != null) {
+                textureView.setAlpha(1f); // Remove fade-in effect if any
             }
 
-            @Override
-            public void onConfigureFailed(@NonNull CameraCaptureSession session) {
-                Log.e(TAG, "High-speed session configuration failed");
-                rejectIfPossible("High-speed configuration failed");
-                getActivity().runOnUiThread(() -> cleanupResources());
-            }
-        }, backgroundHandler);
+            // Show only initial buttons
+            if (recordButton != null)
+                recordButton.setVisibility(View.VISIBLE);
+            if (pauseButton != null)
+                pauseButton.setVisibility(View.GONE);
+            if (stopButton != null)
+                stopButton.setVisibility(View.GONE);
+            if (backButton != null)
+                backButton.setVisibility(View.VISIBLE);
+        });
     }
 
     private void startStandardCaptureSession() throws Exception {
