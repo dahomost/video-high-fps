@@ -16,6 +16,7 @@ import android.media.MediaRecorder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 import android.util.Range;
@@ -88,6 +89,9 @@ public class TpaCameraPlugin extends Plugin {
     private View blackPlaceholder;
     private final Object cameraLock = new Object();
 
+    // ONNX
+    private onnxPreChecking preCheck;
+
     private final Handler timerHandler = new Handler();
     private final Runnable timerRunnable = new Runnable() {
         @Override
@@ -133,6 +137,20 @@ public class TpaCameraPlugin extends Plugin {
         Log.d(TAG, "   - Manufacturer: " + Build.MANUFACTURER);
         Log.d(TAG, "   - Model       : " + Build.MODEL);
         Log.d(TAG, "   - Android API : " + Build.VERSION.SDK_INT + " (" + Build.VERSION.RELEASE + ")");
+
+        // ONNX: Only lighting check
+        // -------------------------------------------------
+        if (preCheck == null) {
+            preCheck = new onnxPreChecking(getContext());
+
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                if (textureView != null && textureView.isAvailable()) {
+                    preCheck.checkLighting(textureView); // Lighting only
+                }
+
+            }, 1500);
+        }
+        // -------------------------------------------------
 
         try {
             // Full reset before reusing
@@ -419,6 +437,13 @@ public class TpaCameraPlugin extends Plugin {
         textureView.setKeepScreenOn(true);
         overlay.addView(textureView);
 
+        // Grid Overlay added just after textureView
+        GridOverlay gridOverlay = new GridOverlay(activity);
+        gridOverlay.setLayoutParams(new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        overlay.addView(gridOverlay);
+
         // ── Timer label ─
         timerView = new TextView(activity);
         timerView.setText("00:00");
@@ -691,6 +716,16 @@ public class TpaCameraPlugin extends Plugin {
                                 backgroundHandler);
 
                         captureSession = session;
+
+                        // ✅ Show toast with selected resolution + FPS
+                        getActivity().runOnUiThread(() -> {
+                            recordButton.setVisibility(View.VISIBLE);
+                            Toast.makeText(getContext(),
+                                    "Ready: " + videoFrameRate + "fps @ " +
+                                            selectedSize.getWidth() + "x" + selectedSize.getHeight(),
+                                    Toast.LENGTH_SHORT).show();
+                        });
+
                         onPreviewSuccess(); // Handles fade-in + UI
 
                     } catch (Exception e) {
