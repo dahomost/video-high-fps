@@ -175,8 +175,11 @@ public class TpaCameraPlugin extends Plugin {
 
         Log.d(TAG, "startRecording -> Permission granted...");
 
-        // Initialize ONNX and FeedbackHelper
-        preCheck = new onnxPreChecking(getContext());
+        // ONNX: Only lighting check
+        // -------------------------------------------------
+        if (preCheck == null)
+            preCheck = new onnxPreChecking(getContext());
+
         feedbackHelper = new FeedbackHelper(getContext());
 
         // Initialize pose detector (only once)
@@ -562,14 +565,14 @@ public class TpaCameraPlugin extends Plugin {
                 // Check if TTS is in progress
                 if (!isTTSInProgress) {
                     isTTSInProgress = true; // Set the flag to true
-                    feedbackHelper.speakWithBeeps("Pose looks good, you're aligned!", 2, 1500,
+                    feedbackHelper.speakWithBeeps("Pose looks good, you're aligned!", 2, 3000,
                             () -> isTTSInProgress = false); // TTS feedback if aligned
                 }
             } else {
                 // Check if TTS is in progress
                 if (!isTTSInProgress) {
                     isTTSInProgress = true; // Set the flag to true
-                    feedbackHelper.speakWithBeeps("Please align your shoulders!", 2, 1500,
+                    feedbackHelper.speakWithBeeps("Please align your shoulders!", 2, 3000,
                             () -> isTTSInProgress = false); // TTS feedback if not aligned
                 }
             }
@@ -577,7 +580,7 @@ public class TpaCameraPlugin extends Plugin {
             // If shoulders not detected, provide feedback once
             if (!isTTSInProgress) {
                 isTTSInProgress = true; // Set the flag to true
-                feedbackHelper.speakWithBeeps("Failed to detect shoulders.", 2, 1500, () -> isTTSInProgress = false);
+                feedbackHelper.speakWithBeeps("Failed to detect shoulders.", 2, 3000, () -> isTTSInProgress = false);
             }
         }
     }
@@ -1552,7 +1555,7 @@ public class TpaCameraPlugin extends Plugin {
 
     // Ask the user if they're ready to start recording
     private void askToStartRecording() {
-        feedbackHelper.speakWithBeeps("You're good to go, can I start recording now?", 1, 1500, () -> {
+        feedbackHelper.speakWithBeeps("You're good to go, can I start recording now?", 1, 3000, () -> {
             // Wait for response, if "Yes", start recording
             // If response is "No", ask again after 20 seconds
             // This requires integrating voice recognition to capture the answer (e.g.
@@ -1597,10 +1600,10 @@ public class TpaCameraPlugin extends Plugin {
         boolean isTooClose = bboxWidth > previewWidth * 0.6;
 
         if (!isCentered) {
-            Log.d(TAG, "Pose is not centered.");
+            Log.d(TAG, "Position is not centered.");
         }
         if (isTooClose) {
-            Log.d(TAG, "Pose is too close.");
+            Log.d(TAG, "Position is too close.");
         }
 
         // If the pose is not centered or the person is too close, it's an invalid pose

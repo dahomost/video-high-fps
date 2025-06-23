@@ -26,6 +26,7 @@ public class onnxPreChecking {
     private boolean lightingCheckRunning = false;
 
     private final PoseDetector poseDetector;
+    private Pose latestPose; // Variable to hold the latest pose
 
     // ✅ Centralized TTS messages
     private final static class phrases {
@@ -56,12 +57,12 @@ public class onnxPreChecking {
     // ✅ TTS feedback methods
     public void sayTooDarkWarning() {
         Log.d(TAG, "🗣️ Triggering TTS: TOO DARK");
-        feedbackHelper.speakWithBeeps(phrases.TOO_DARK, 2, 500, () -> Log.d("TTS", "Now ready for next action"));
+        feedbackHelper.speakWithBeeps(phrases.TOO_DARK, 2, 1000, () -> Log.d("TTS", "Now ready for next action"));
     }
 
     public void sayLightIsGood() {
         Log.d(TAG, "🗣️ Triggering TTS: LIGHT OK");
-        feedbackHelper.speakWithBeeps(phrases.LIGHT_OK, 1, 500, () -> Log.d("TTS", "Now ready for next action"));
+        feedbackHelper.speakWithBeeps(phrases.LIGHT_OK, 1, 1000, () -> Log.d("TTS", "Now ready for next action"));
     }
 
     // ------------------------------------------------------------------
@@ -160,6 +161,9 @@ public class onnxPreChecking {
                         Log.d(TAG, "📍 Landmark type " + type + " at x=" + x + ", y=" + y);
                     }
 
+                    // ✅ Store the latest pose
+                    updateLatestPose(pose);
+
                     // ✅ Analyze the pose and provide feedback
                     int width = textureView.getWidth();
                     int height = textureView.getHeight();
@@ -191,21 +195,32 @@ public class onnxPreChecking {
             maxY = Math.max(maxY, y);
         }
 
+        // Calculate center of bounding box
         float centerX = (minX + maxX) / 2f;
         float centerY = (minY + maxY) / 2f;
+
+        // Define the valid boundary for the person to be centered inside
+        int boundaryLeft = previewWidth / 3 + 50; // The boundary's left position
+        int boundaryTop = previewHeight / 3 + 50; // The boundary's top position
+        int boundaryRight = 2 * previewWidth / 3 - 50; // The boundary's right position
+        int boundaryBottom = 2 * previewHeight / 3 - 50; // The boundary's bottom position
+
+        boolean isCentered = centerX > boundaryLeft && centerX < boundaryRight && centerY > boundaryTop
+                && centerY < boundaryBottom;
+
+        // Calculate pose bounding box width
         float bboxWidth = maxX - minX;
 
-        Log.d(TAG, "📐 Pose Center: x=" + centerX + ", y=" + centerY + ", bbox width=" + bboxWidth);
-
-        // Check if the person is centered and if they're too close
-        boolean isCentered = centerX > previewWidth * 0.3 && centerX < previewWidth * 0.7;
-        boolean isTooClose = bboxWidth > previewWidth * 0.6;
+        boolean isTooClose = bboxWidth > previewWidth * 0.6; // Check if the person is too close
 
         if (!isCentered) {
+            Log.d(TAG, "Your Position is off-center.");
             sayCenterYourselfWarning(); // Give feedback if not centered
         } else if (isTooClose) {
+            Log.d(TAG, "Your position is in the center.");
             sayMoveBackWarning(); // Give feedback if too close
         } else {
+            Log.d(TAG, "Your position is ok, start the recording");
             sayFaceOK(); // Give feedback if the person is in the correct position
         }
     }
@@ -219,22 +234,32 @@ public class onnxPreChecking {
     }
 
     private void sayMoveBackWarning() {
-        feedbackHelper.speakWithBeeps("You're too close... Step back slightly.", 2, 500, () -> {
+        feedbackHelper.speakWithBeeps("You're too close... Step back slightly.", 2, 1500, () -> {
             Log.d("TTS", "Now ready for next action");
         });
     }
 
     private void sayFaceOK() {
-        feedbackHelper.speakWithBeeps("Great position... Stay still and get ready.", 1, 500, () -> {
-            Log.d("TTS", "Now ready for next action");
-        });
-    }
-
-    private void sayPoseNotDetected() {
-        feedbackHelper.speakWithBeeps("Pose not detected... Please make sure your full body is visible in the frame.",
-                2, 500, () -> {
+        feedbackHelper.speakWithBeeps("You are in a good position... Don't move and be read for the recording.", 1,
+                1500, () -> {
                     Log.d("TTS", "Now ready for next action");
                 });
     }
 
+    private void sayPoseNotDetected() {
+        feedbackHelper.speakWithBeeps("Player not detected... Please make sure your full body is visible in the frame.",
+                2, 1500, () -> {
+                    Log.d("TTS", "Now ready for next action");
+                });
+    }
+
+    // Method to update the latest pose
+    public void updateLatestPose(Pose pose) {
+        this.latestPose = pose;
+    }
+
+    // Method to retrieve the latest pose
+    public Pose getLatestPose() {
+        return latestPose;
+    }
 }
