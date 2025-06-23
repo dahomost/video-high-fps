@@ -252,6 +252,7 @@ public class TpaCameraPlugin extends Plugin {
 
                 if (isLightingGood()) {
                     // Then, check pose
+                    Log.d(TAG, "start checking pose -------------------------------------------");
                     preCheck.detectPoseFromPreview(textureView);
                 } else {
                     Log.w(TAG, "Lighting is not good, retrying...");
@@ -533,9 +534,7 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
-    // Method to validate shoulder alignment and provide TTS feedback
-    // Add a flag to check if TTS is already speaking
-    private boolean isTTSInProgress = false;
+    private boolean isTTSInProgress = false; // Flag to track if TTS is in progress
 
     private void validateShouldersAlignment(Pose pose) {
         // Get all pose landmarks
@@ -565,14 +564,14 @@ public class TpaCameraPlugin extends Plugin {
                 // Check if TTS is in progress
                 if (!isTTSInProgress) {
                     isTTSInProgress = true; // Set the flag to true
-                    feedbackHelper.speakWithBeeps("Pose looks good, you're aligned!", 2, 3000,
+                    feedbackHelper.speakWithBeeps("Pose looks good, you're aligned!", 2, 1500,
                             () -> isTTSInProgress = false); // TTS feedback if aligned
                 }
             } else {
                 // Check if TTS is in progress
                 if (!isTTSInProgress) {
                     isTTSInProgress = true; // Set the flag to true
-                    feedbackHelper.speakWithBeeps("Please align your shoulders!", 2, 3000,
+                    feedbackHelper.speakWithBeeps("Please align your shoulders!", 2, 1500,
                             () -> isTTSInProgress = false); // TTS feedback if not aligned
                 }
             }
@@ -580,7 +579,7 @@ public class TpaCameraPlugin extends Plugin {
             // If shoulders not detected, provide feedback once
             if (!isTTSInProgress) {
                 isTTSInProgress = true; // Set the flag to true
-                feedbackHelper.speakWithBeeps("Failed to detect shoulders.", 2, 3000, () -> isTTSInProgress = false);
+                feedbackHelper.speakWithBeeps("Failed to detect shoulders.", 2, 1500, () -> isTTSInProgress = false);
             }
         }
     }

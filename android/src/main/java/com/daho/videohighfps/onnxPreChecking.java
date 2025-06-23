@@ -136,6 +136,7 @@ public class onnxPreChecking {
     // ------------------------------------------------------------------
     // ✅ Pose detection from TextureView bitmap + spoken feedback
     public void detectPoseFromPreview(TextureView textureView) {
+        Log.d(TAG, "started -  pose check -------------------------------------------");
         if (textureView == null || !textureView.isAvailable()) {
             Log.w(TAG, "TextureView not available for pose detection");
             return;
@@ -212,6 +213,9 @@ public class onnxPreChecking {
         float bboxWidth = maxX - minX;
 
         boolean isTooClose = bboxWidth > previewWidth * 0.6; // Check if the person is too close
+
+        // Log to see if these conditions are met
+        Log.d(TAG, "Centered: " + isCentered + ", Too Close: " + isTooClose);
 
         if (!isCentered) {
             Log.d(TAG, "Your Position is off-center.");
