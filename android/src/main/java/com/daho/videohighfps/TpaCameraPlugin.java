@@ -16,7 +16,6 @@ import android.media.MediaRecorder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 import android.util.Range;
@@ -45,6 +44,9 @@ import com.getcapacitor.PermissionState;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
+import com.google.mlkit.vision.pose.PoseDetection;
+import com.google.mlkit.vision.pose.PoseDetector;
+import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions;
 
 import java.io.File;
 import java.io.IOException;
@@ -54,6 +56,13 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+
+// ONNX
+import android.graphics.Bitmap;
+import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.pose.PoseLandmark;
+import android.speech.tts.TextToSpeech;
+import com.google.mlkit.vision.pose.Pose;
 
 @CapacitorPlugin(name = "TpaCamera", permissions = {
         @Permission(strings = {
@@ -91,7 +100,53 @@ public class TpaCameraPlugin extends Plugin {
 
     // ONNX
     private onnxPreChecking preCheck;
+    private FeedbackHelper feedbackHelper;
+    private PoseDetector poseDetector;
 
+    // Pose detection handler with 1-second interval
+    private final Handler poseHandler = new Handler();
+    private int poseDetectionInterval = 1000; // Start with 1 second
+    private final Runnable poseRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (textureView != null && textureView.isAvailable()) {
+                // Convert the current frame into a Bitmap
+                Bitmap bitmap = textureView.getBitmap();
+
+                if (bitmap != null) {
+                    // Convert Bitmap to InputImage
+                    InputImage image = InputImage.fromBitmap(bitmap, 0); // The second argument is the rotation (if any)
+
+                    // Process the frame with pose detection
+                    poseDetector.process(image)
+                            .addOnSuccessListener(pose -> {
+                                if (pose != null) {
+                                    // Validate the pose
+                                    validatePoseAndFeedback(pose, textureView.getWidth(), textureView.getHeight());
+                                }
+                            })
+                            .addOnFailureListener(e -> {
+                                Log.e(TAG, "Pose detection failed", e);
+                                poseDetectionInterval = 2000; // Increase interval after failure
+                                poseHandler.postDelayed(this, poseDetectionInterval); // Retry after a longer interval
+                            });
+                } else {
+                    Log.w(TAG, "Failed to get bitmap from TextureView");
+                }
+            }
+
+            // Re-run after dynamic interval (default 1 second or adjusted based on
+            // conditions)
+            poseHandler.postDelayed(this, poseDetectionInterval);
+        }
+    };
+
+    // Start pose detection with dynamic interval
+    public void startPoseDetection() {
+        poseHandler.post(poseRunnable); // Ensure this is inside a method that is executed
+    }
+
+    // timerHandler
     private final Handler timerHandler = new Handler();
     private final Runnable timerRunnable = new Runnable() {
         @Override
@@ -112,6 +167,7 @@ public class TpaCameraPlugin extends Plugin {
         this.storedCall = call;
         this.cameraManager = (CameraManager) getContext().getSystemService(Context.CAMERA_SERVICE);
 
+        // Check permission before proceeding
         if (getPermissionState("camera") != PermissionState.GRANTED) {
             requestPermissionForAlias("camera", call, "onCameraPermissionResult");
             return;
@@ -119,7 +175,18 @@ public class TpaCameraPlugin extends Plugin {
 
         Log.d(TAG, "startRecording -> Permission granted...");
 
-        // Read parameters
+        // Initialize ONNX and FeedbackHelper
+        preCheck = new onnxPreChecking(getContext());
+        feedbackHelper = new FeedbackHelper(getContext());
+
+        // Initialize pose detector (only once)
+        if (poseDetector == null) {
+            poseDetector = PoseDetection.getClient(new PoseDetectorOptions.Builder()
+                    .setDetectorMode(PoseDetectorOptions.STREAM_MODE)
+                    .build());
+        }
+
+        // Read parameters for video recording
         Integer fpsOpt = call.getInt("fps");
         this.videoFrameRate = (fpsOpt != null) ? fpsOpt : 240;
 
@@ -133,27 +200,20 @@ public class TpaCameraPlugin extends Plugin {
         Log.d(TAG, " --> fps: " + videoFrameRate);
         Log.d(TAG, " --> sizeLimit: " + sizeLimit);
         Log.d(TAG, " --> resolution: " + resolution);
-        Log.d(TAG, " ==> Device Info:");
-        Log.d(TAG, "   - Manufacturer: " + Build.MANUFACTURER);
-        Log.d(TAG, "   - Model       : " + Build.MODEL);
-        Log.d(TAG, "   - Android API : " + Build.VERSION.SDK_INT + " (" + Build.VERSION.RELEASE + ")");
 
-        // ONNX: Only lighting check
-        // -------------------------------------------------
-        if (preCheck == null) {
-            preCheck = new onnxPreChecking(getContext());
+        // Start lighting check
+        Log.d(TAG, "✅ [ONNX] Preparing lighting monitor...");
+        getActivity().runOnUiThread(() -> {
+            if (textureView != null && textureView.isAvailable()) {
+                preCheck.startReactiveLightingCheck(textureView);
+                Log.d(TAG, "✅ [ONNX] Lighting check started");
+            } else {
+                Log.w(TAG, "⚠️ [ONNX] TextureView not available yet");
+            }
+        });
 
-            new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                if (textureView != null && textureView.isAvailable()) {
-                    preCheck.checkLighting(textureView); // Lighting only
-                }
-
-            }, 1500);
-        }
-        // -------------------------------------------------
-
+        // Camera initialization and preview
         try {
-            // Full reset before reusing
             cleanupResources();
             stopBackgroundThread();
 
@@ -171,7 +231,6 @@ public class TpaCameraPlugin extends Plugin {
             getActivity().runOnUiThread(() -> {
                 try {
                     showCameraPreview();
-
                     // Hide WebView for native fullscreen
                     View webView = getBridge().getWebView();
                     if (webView != null) {
@@ -183,26 +242,42 @@ public class TpaCameraPlugin extends Plugin {
                 }
             });
 
+            // Check Lighting and Pose after some time (recheck loop)
+            new Handler().postDelayed(() -> {
+                // First, check lighting
+                preCheck.startReactiveLightingCheck(textureView); // Fixed here
+
+                if (isLightingGood()) {
+                    // Then, check pose
+                    preCheck.detectPoseFromPreview(textureView);
+                } else {
+                    Log.w(TAG, "Lighting is not good, retrying...");
+                    preCheck.startReactiveLightingCheck(textureView); // Retry Lighting Check
+                    return;
+                }
+
+                // Get the latest pose after the lighting check
+                Pose latestPose = preCheck.getLatestPose(); // Ensure you are getting the most recent pose from preCheck
+
+                // Validate pose
+                if (latestPose != null && isPoseValid(latestPose, textureView.getWidth(), textureView.getHeight())) {
+                    askToStartRecording();
+                } else {
+                    Log.w(TAG, "Pose is invalid, retrying...");
+                    preCheck.detectPoseFromPreview(textureView); // Keep checking pose
+                }
+            }, 5000); // Check again after 5 seconds
+
         } catch (Exception e) {
             Log.e(TAG, "Failed to startRecording()", e);
             cleanupResources();
             stopBackgroundThread();
             call.reject("Failed to start recording: " + e.getMessage());
-
-            // Try restoring WebView
-            getActivity().runOnUiThread(() -> {
-                try {
-                    View webView = getBridge().getWebView();
-                    if (webView != null) {
-                        webView.setVisibility(View.VISIBLE);
-                        fadeTo(webView, 1f, 200);
-                        Log.d(TAG, "WebView restored after error in startRecording");
-                    }
-                } catch (Exception ex) {
-                    Log.e(TAG, "Failed to restore WebView after error", ex);
-                }
-            });
         }
+    }
+
+    private boolean isLightingGood() {
+        return true;
     }
 
     private String getPreferredCameraId() throws CameraAccessException {
@@ -379,6 +454,25 @@ public class TpaCameraPlugin extends Plugin {
                     previewSurface = new Surface(surface);
                     configureTransform(width, height);
                     openCamera();
+
+                    // Start ONNX lighting check AFTER texture is available
+                    getActivity().runOnUiThread(() -> {
+                        if (preCheck == null) {
+                            preCheck = new onnxPreChecking(getContext());
+                            Log.d(TAG, "✅ [ONNX] Instance created after preview");
+                        }
+
+                        if (textureView != null && textureView.isAvailable()) {
+                            preCheck.startReactiveLightingCheck(textureView);
+                            Log.d(TAG, "✅ [ONNX] Lighting check started after preview");
+                        } else {
+                            Log.w(TAG, "⚠️ [ONNX] TextureView still not available");
+                        }
+
+                        // Start processing the pose detection
+                        processPoseDetection();
+                    });
+
                 } else {
                     rejectIfPossible("Camera preview setup failed: no resolution selected");
                 }
@@ -396,10 +490,96 @@ public class TpaCameraPlugin extends Plugin {
 
             @Override
             public void onSurfaceTextureUpdated(@NonNull SurfaceTexture surface) {
+                // This is where you will process the frame for pose detection
+                processPoseDetection();
             }
         });
 
         setupUI(); // Adds textureView and UI buttons
+    }
+
+    private void processPoseDetection() {
+        // Check if the TextureView is available
+        if (textureView != null && textureView.isAvailable()) {
+            // Convert the current frame into a Bitmap
+            Bitmap bitmap = textureView.getBitmap();
+
+            if (bitmap == null) {
+                Log.w(TAG, "Failed to get bitmap from TextureView");
+                return;
+            }
+
+            // Convert Bitmap to InputImage
+            InputImage image = InputImage.fromBitmap(bitmap, 0);
+
+            // Process the frame with pose detection
+            poseDetector.process(image)
+                    .addOnSuccessListener(pose -> {
+                        if (pose != null) {
+                            // Log.d(TAG, "Pose detected: " + pose); // Log pose detection
+
+                            // Validate pose using specific landmarks
+                            validateShouldersAlignment(pose);
+                        }
+                    })
+                    .addOnFailureListener(e -> {
+                        Log.e(TAG, "Pose detection failed", e);
+                    });
+        } else {
+            Log.w(TAG, "TextureView not available for pose detection");
+        }
+    }
+
+    // Method to validate shoulder alignment and provide TTS feedback
+    // Add a flag to check if TTS is already speaking
+    private boolean isTTSInProgress = false;
+
+    private void validateShouldersAlignment(Pose pose) {
+        // Get all pose landmarks
+        List<PoseLandmark> landmarks = pose.getAllPoseLandmarks();
+
+        // Initialize variables for left and right shoulders
+        PoseLandmark leftShoulder = null;
+        PoseLandmark rightShoulder = null;
+
+        // Find the landmarks for left and right shoulders
+        for (PoseLandmark landmark : landmarks) {
+            if (landmark.getLandmarkType() == PoseLandmark.LEFT_SHOULDER) {
+                leftShoulder = landmark;
+            } else if (landmark.getLandmarkType() == PoseLandmark.RIGHT_SHOULDER) {
+                rightShoulder = landmark;
+            }
+        }
+
+        // If both shoulders are detected, check their alignment
+        if (leftShoulder != null && rightShoulder != null) {
+            float leftShoulderX = leftShoulder.getPosition().x;
+            float rightShoulderX = rightShoulder.getPosition().x;
+
+            // Check if shoulders are aligned (distance between them is less than a
+            // threshold)
+            if (Math.abs(leftShoulderX - rightShoulderX) < 50) {
+                // Check if TTS is in progress
+                if (!isTTSInProgress) {
+                    isTTSInProgress = true; // Set the flag to true
+                    feedbackHelper.speakWithBeeps("Pose looks good, you're aligned!", 2, 1500,
+                            () -> isTTSInProgress = false); // TTS feedback if aligned
+                }
+            } else {
+                // Check if TTS is in progress
+                if (!isTTSInProgress) {
+                    isTTSInProgress = true; // Set the flag to true
+                    feedbackHelper.speakWithBeeps("Please align your shoulders!", 2, 1500,
+                            () -> isTTSInProgress = false); // TTS feedback if not aligned
+                }
+            }
+        } else {
+            // If shoulders not detected, provide feedback once
+            if (!isTTSInProgress) {
+                isTTSInProgress = true; // Set the flag to true
+                feedbackHelper.speakWithBeeps("Failed to detect shoulders.", 2, 1500, () -> isTTSInProgress = false);
+            }
+        }
     }
 
     /**
@@ -964,6 +1144,13 @@ public class TpaCameraPlugin extends Plugin {
                 previewSurface = null;
             }
 
+            // clean preCheck
+            if (preCheck != null) {
+                preCheck.cleanup();
+                preCheck = null;
+                Log.d(TAG, "1 Pre-check clean up <<<<<<<<<<<<<<<");
+            }
+
             // Ensure UI view removal is done on UI thread
             getActivity().runOnUiThread(() -> {
                 try {
@@ -1209,6 +1396,11 @@ public class TpaCameraPlugin extends Plugin {
         } catch (Exception e) {
             rejectIfPossible("Failed to stop recording: " + e.getMessage());
         } finally {
+            if (preCheck != null) {
+                preCheck.stopReactiveLightingCheck();
+                Log.d(TAG, "✅ Lighting check stopped in stopRecording()");
+            }
+
             getActivity().runOnUiThread(this::cleanupResources);
         }
     }
@@ -1344,4 +1536,80 @@ public class TpaCameraPlugin extends Plugin {
             backgroundHandler = null;
         }
     }
+
+    // ========================================
+
+    // Validate the pose and give feedback
+    private void validatePoseAndFeedback(Pose pose, int previewWidth, int previewHeight) {
+        if (isPoseValid(pose, previewWidth, previewHeight)) {
+            askToStartRecording();
+        } else {
+            Log.w(TAG, "Pose is invalid, retrying...");
+            // Retry the pose detection after a short delay, if needed
+            preCheck.detectPoseFromPreview(textureView); // Keep checking pose if needed, avoid infinite recursion
+        }
+    }
+
+    // Ask the user if they're ready to start recording
+    private void askToStartRecording() {
+        feedbackHelper.speakWithBeeps("You're good to go, can I start recording now?", 1, 1500, () -> {
+            // Wait for response, if "Yes", start recording
+            // If response is "No", ask again after 20 seconds
+            // This requires integrating voice recognition to capture the answer (e.g.
+            // SpeechRecognizer)
+        });
+    }
+
+    // Updated isPoseValid to check alignment and distance
+    private boolean isPoseValid(Pose pose, int previewWidth, int previewHeight) {
+        if (pose == null || pose.getAllPoseLandmarks().isEmpty()) {
+            Log.w(TAG, "Pose is invalid: no landmarks detected.");
+            return false; // Pose is invalid if there are no landmarks
+        }
+
+        // Initialize bounding box coordinates for the detected pose
+        float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
+        float maxX = Float.MIN_VALUE, maxY = Float.MIN_VALUE;
+
+        for (PoseLandmark landmark : pose.getAllPoseLandmarks()) {
+            float x = landmark.getPosition().x;
+            float y = landmark.getPosition().y;
+
+            // Find bounding box coordinates (min/max)
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+        }
+
+        // Calculate center and width of the bounding box
+        float centerX = (minX + maxX) / 2f;
+        float centerY = (minY + maxY) / 2f;
+        float bboxWidth = maxX - minX;
+
+        Log.d(TAG, "📐 Pose Center: x=" + centerX + ", y=" + centerY + ", bbox width=" + bboxWidth);
+
+        // Check if the person is centered in the frame (assuming centered around 50% of
+        // the preview width)
+        boolean isCentered = centerX > previewWidth * 0.3 && centerX < previewWidth * 0.7;
+
+        // Check if the person is too close (based on the width of the detected pose)
+        boolean isTooClose = bboxWidth > previewWidth * 0.6;
+
+        if (!isCentered) {
+            Log.d(TAG, "Pose is not centered.");
+        }
+        if (isTooClose) {
+            Log.d(TAG, "Pose is too close.");
+        }
+
+        // If the pose is not centered or the person is too close, it's an invalid pose
+        if (!isCentered || isTooClose) {
+            return false;
+        }
+
+        // If pose is valid
+        return true;
+    }
+
 }

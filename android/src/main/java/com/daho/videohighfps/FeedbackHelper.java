@@ -56,16 +56,24 @@ public class FeedbackHelper {
     }
 
     private void playBeeps(int count) {
-        ToneGenerator toneGen = new ToneGenerator(AudioManager.STREAM_MUSIC, 100);
-        for (int i = 0; i < count; i++) {
-            toneGen.startTone(ToneGenerator.TONE_CDMA_PIP, 150);
-            try {
-                Thread.sleep(250); // gap between beeps
-            } catch (InterruptedException e) {
-                e.printStackTrace();
+        ToneGenerator toneGen = null;
+        try {
+            toneGen = new ToneGenerator(AudioManager.STREAM_MUSIC, 100);
+            for (int i = 0; i < count; i++) {
+                toneGen.startTone(ToneGenerator.TONE_CDMA_PIP, 150);
+                try {
+                    Thread.sleep(250); // gap between beeps
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error generating beeps", e);
+        } finally {
+            if (toneGen != null) {
+                toneGen.release();
             }
         }
-        toneGen.release();
     }
 
     public void shutdown() {

@@ -55,12 +55,21 @@ dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
     implementation project(':capacitor-android')
 
-    // Required for MediaRecorder and Camera2 API
+    // ✅ Core Android support
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 
-    // Unit Testing
+    // ✅ ML Kit Face Detection
+    implementation 'com.google.mlkit:face-detection:16.1.5'
+    implementation 'com.google.mlkit:vision-common:17.3.0'
+
+    // ✅ ML Kit Pose Detection (Accurate)
+    implementation 'com.google.mlkit:pose-detection-accurate:17.0.0'
+    implementation 'com.google.mlkit:pose-detection-common:17.0.0'
+    implementation 'com.google.mlkit:pose-detection:17.0.0'
+
+    // ✅ Unit Testing
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
