@@ -806,7 +806,7 @@ public class TpaCameraPlugin extends Plugin {
                         cameraDevice = camera;
                     }
 
-                    backgroundHandler.post(() -> {
+                    backgroundHandler.postDelayed(() -> {
                         try {
                             synchronized (cameraLock) {
                                 if (cameraDevice == null) {
@@ -824,7 +824,7 @@ public class TpaCameraPlugin extends Plugin {
                             rejectIfPossible(e.getMessage());
                             getActivity().runOnUiThread(() -> cleanupResources());
                         }
-                    });
+                    }, 400);
                 }
 
                 @Override
@@ -838,7 +838,8 @@ public class TpaCameraPlugin extends Plugin {
                 public void onError(@NonNull CameraDevice camera, int error) {
                     camera.close();
                     cameraDevice = null;
-                    rejectIfPossible("Camera error: " + error);
+                    String fullError = getCameraErrorMessage(error);
+                    rejectIfPossible(fullError);
                     getActivity().runOnUiThread(() -> cleanupResources());
                 }
             }, backgroundHandler);
@@ -1486,14 +1487,39 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
-    private void rejectIfPossible(String message) {
-        if (storedCall != null) {
-            Log.e(TAG, message);
-            storedCall.reject(message);
-            storedCall = null;
-        } else
-            Log.w(TAG, "storedCall is null. Could not reject: " + message);
+    private void rejectIfPossible(String errorMessage) {
+        if (storedCall == null) {
+            Log.w(TAG, "storedCall is null. Could not reject: " + errorMessage);
+            return;
+        }
 
+        JSObject result = new JSObject();
+        result.put("videoPath", "");
+        result.put("error", errorMessage);
+        result.put("frameRate", videoFrameRate);
+        result.put("resolution", selectedSize != null ? selectedSize.getWidth() + "x" + selectedSize.getHeight() : "");
+        result.put("duration", 0);
+        result.put("sizeLimit", sizeLimit);
+        result.put("fileSizeMB", 0);
+        storedCall.resolve(result);
+        storedCall = null;
+    }
+
+    private String getCameraErrorMessage(int errorCode) {
+        switch (errorCode) {
+            case CameraDevice.StateCallback.ERROR_CAMERA_IN_USE:
+                return "ERROR_CAMERA_IN_USE (1): Camera is already in use by another app.";
+            case CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE:
+                return "ERROR_MAX_CAMERAS_IN_USE (2): Too many cameras are in use simultaneously.";
+            case CameraDevice.StateCallback.ERROR_CAMERA_DISABLED:
+                return "ERROR_CAMERA_DISABLED (3): Camera is disabled due to device policy.";
+            case CameraDevice.StateCallback.ERROR_CAMERA_DEVICE:
+                return "ERROR_CAMERA_DEVICE (4): Fatal error. Camera must be closed and reopened.";
+            case CameraDevice.StateCallback.ERROR_CAMERA_SERVICE:
+                return "ERROR_CAMERA_SERVICE (5): Camera service has crashed. Restart required.";
+            default:
+                return "UNKNOWN CAMERA ERROR (" + errorCode + ")";
+        }
     }
 
     private void safeReleaseMediaRecorder() {
