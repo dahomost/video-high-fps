@@ -1501,6 +1501,9 @@ public class TpaCameraPlugin extends Plugin {
         result.put("duration", 0);
         result.put("sizeLimit", sizeLimit);
         result.put("fileSizeMB", 0);
+
+        Log.d(TAG, "Result JSON: " + result.toString());
+
         storedCall.resolve(result);
         storedCall = null;
     }
