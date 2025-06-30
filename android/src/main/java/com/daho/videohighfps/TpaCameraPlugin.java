@@ -1021,20 +1021,24 @@ public class TpaCameraPlugin extends Plugin {
     }
 
     private void startStandardCaptureSession() throws Exception {
+        Log.d(TAG, " startStandardCaptureSession() called");
+
         SurfaceTexture surfaceTexture = textureView.getSurfaceTexture();
         if (surfaceTexture == null) {
+            Log.e(TAG, "Surface texture is null");
             throw new IllegalStateException("Surface texture not available");
         }
+
         surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
         previewSurface = new Surface(surfaceTexture);
+        Log.d(TAG, " Preview surface set: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
 
-        // Reset old MediaRecorder if it exists
         safeReleaseMediaRecorder();
 
-        // Setup MediaRecorder after surfaces are ready
         setupMediaRecorder();
         Surface recorderSurface = mediaRecorder.getSurface();
         if (recorderSurface == null) {
+            Log.e(TAG, " Recorder surface is null after prepare()");
             throw new IllegalStateException("Recorder surface is null after prepare()");
         }
 
@@ -1042,10 +1046,13 @@ public class TpaCameraPlugin extends Plugin {
         surfaces.add(previewSurface);
         surfaces.add(recorderSurface);
 
+        Log.d(TAG, "🎥 Creating standard camera session...");
         cameraDevice.createCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
             @Override
             public void onConfigured(@NonNull CameraCaptureSession session) {
+                Log.d(TAG, "✅ Standard session configured");
                 captureSession = session;
+
                 try {
                     CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
                     builder.addTarget(previewSurface);
@@ -1054,15 +1061,13 @@ public class TpaCameraPlugin extends Plugin {
                     builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                             new Range<>(videoFrameRate, videoFrameRate));
 
+                    Log.d(TAG, "⚡ Repeating standard request: " + videoFrameRate + "fps");
                     session.setRepeatingRequest(builder.build(), null, backgroundHandler);
 
                     textureView.post(() -> {
                         configureTransform(textureView.getWidth(), textureView.getHeight());
+                        fadeTo(textureView, 1f, 300);
 
-                        // Fade in the preview
-                        fadeTo(textureView, 1f, 300); // Fade in
-
-                        // Remove black placeholder from overlay
                         if (blackPlaceholder != null) {
                             blackPlaceholder.animate()
                                     .alpha(0f)
@@ -1080,7 +1085,6 @@ public class TpaCameraPlugin extends Plugin {
                                     .start();
                         }
 
-                        // Remove full-screen black overlay
                         if (blackOverlayView != null) {
                             ViewGroup root = (ViewGroup) getActivity().findViewById(android.R.id.content);
                             root.removeView(blackOverlayView);
@@ -1089,12 +1093,14 @@ public class TpaCameraPlugin extends Plugin {
                     });
 
                     getActivity().runOnUiThread(() -> {
+                        Log.d(TAG, "✅ UI ready — preview should be visible now");
                         recordButton.setVisibility(View.VISIBLE);
                         Toast.makeText(getContext(), "Ready: " + videoFrameRate + "fps " +
                                 selectedSize.getWidth() + "x" + selectedSize.getHeight(), Toast.LENGTH_SHORT).show();
                     });
 
                 } catch (Exception e) {
+                    Log.e(TAG, "❌ Failed to start preview: " + e.getMessage(), e);
                     rejectIfPossible("Failed to start preview: " + e.getMessage());
                     getActivity().runOnUiThread(() -> cleanupResources());
                 }
@@ -1102,6 +1108,7 @@ public class TpaCameraPlugin extends Plugin {
 
             @Override
             public void onConfigureFailed(@NonNull CameraCaptureSession session) {
+                Log.e(TAG, "❌ Standard configuration failed");
                 rejectIfPossible("Standard configuration failed");
                 getActivity().runOnUiThread(() -> cleanupResources());
             }
