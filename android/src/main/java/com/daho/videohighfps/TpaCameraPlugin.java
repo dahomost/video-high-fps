@@ -53,7 +53,6 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-import anddroid.graphics.Rect;
 
 @CapacitorPlugin(name = "TpaCamera", permissions = {
         @Permission(strings = {
@@ -664,7 +663,9 @@ public class TpaCameraPlugin extends Plugin {
                 throw new IllegalStateException("Surface texture not available");
             }
 
-            surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
+            int previewWidth = 640;
+            int previewHeight = 360;
+            surfaceTexture.setDefaultBufferSize(previewWidth, previewHeight);
             previewSurface = new Surface(surfaceTexture);
 
             safeReleaseMediaRecorder();
@@ -686,15 +687,18 @@ public class TpaCameraPlugin extends Plugin {
                         builder.addTarget(previewSurface);
                         builder.addTarget(recorderSurface);
                         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-                        builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                                new Range<>(videoFrameRate, videoFrameRate));
 
-                        hsSession.setRepeatingBurst(
-                                hsSession.createHighSpeedRequestList(builder.build()),
-                                null,
-                                backgroundHandler);
+                        // ✅ Relax AE target FPS range
+                        Range<Integer> fpsRange = new Range<>(videoFrameRate, videoFrameRate + 15);
+                        builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange);
+                        Log.d(TAG, "Using relaxed FPS range: " + fpsRange);
+
+                        List<CaptureRequest> burst = hsSession.createHighSpeedRequestList(builder.build());
+                        hsSession.setRepeatingBurst(burst, null, backgroundHandler);
 
                         captureSession = session;
+                        Log.d(TAG, "Live preview started at " + videoFrameRate + "fps (" + selectedSize.getWidth()
+                                + "x" + selectedSize.getHeight() + ")");
                         onPreviewSuccess(); // Fade in
 
                     } catch (Exception e) {
@@ -711,7 +715,7 @@ public class TpaCameraPlugin extends Plugin {
             }, backgroundHandler);
 
         } catch (Exception e) {
-            Log.e(TAG, "Exception during high-speed setup. Trying lower FPS fallback.", e);
+            Log.e(TAG, "Failed to start high-speed capture session", e);
             tryLowerFpsFallback();
         }
     }
