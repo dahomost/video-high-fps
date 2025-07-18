@@ -1,4 +1,4 @@
- package com.daho.videohighfps;
+package com.daho.videohighfps;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
@@ -53,6 +53,7 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import android.graphics.rect;
 
 @CapacitorPlugin(name = "TpaCamera", permissions = {
         @Permission(strings = {
@@ -217,7 +218,7 @@ public class TpaCameraPlugin extends Plugin {
             throw new IllegalStateException("Cannot access camera configuration");
         }
 
-        // Log full capability matrix
+        // Log full devie capability matrix
         Log.d(TAG, "Supported High-Speed Video Sizes and FPS Ranges:");
         for (Size size : configMap.getHighSpeedVideoSizes()) {
             try {
@@ -384,14 +385,6 @@ public class TpaCameraPlugin extends Plugin {
         setupUI(); // Adds textureView and UI buttons
     }
 
-    /**
-     * Density-independent-pixels → physical pixels
-     */
-    private int dpToPx(Context ctx, int dp) {
-        float density = ctx.getResources().getDisplayMetrics().density;
-        return Math.round(dp * density);
-    }
-
     @SuppressLint("SetTextI18n")
     private void setupUI() {
         Activity activity = getActivity();
@@ -406,20 +399,20 @@ public class TpaCameraPlugin extends Plugin {
                 FrameLayout.LayoutParams.MATCH_PARENT));
         overlay.setBackgroundColor(0xFF000000);
 
-        // ── Black placeholder ─
+        // Black placeholder to present flash before TextureView is ready
         blackPlaceholder = new View(activity);
         blackPlaceholder.setLayoutParams(new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
         blackPlaceholder.setBackgroundColor(0xFF000000);
-        overlay.addView(blackPlaceholder);
+        overlay.addView(blackPlaceholder); // Add first
 
-        // ── TextureView ─
-        textureView.setAlpha(0f);
-        textureView.setKeepScreenOn(true);
+        // TextureView
+        textureView.setAlpha(0f); // hidden initially
+        textureView.setKeepScreenOn(true); // prevent screen from sleeping
         overlay.addView(textureView);
 
-        // ── Timer label ─
+        // Timer
         timerView = new TextView(activity);
         timerView.setText("00:00");
         timerView.setTextSize(12);
@@ -441,7 +434,7 @@ public class TpaCameraPlugin extends Plugin {
         timerView.setLayoutParams(timerParams);
         overlay.addView(timerView);
 
-        // ── Buttons ─
+        // Buttons
         recordButton = createIconButton(R.drawable.start);
         pauseButton = createIconButton(R.drawable.pause);
         stopButton = createIconButton(R.drawable.stop);
@@ -450,7 +443,6 @@ public class TpaCameraPlugin extends Plugin {
         LinearLayout buttonsLayout = new LinearLayout(activity);
         buttonsLayout.setOrientation(LinearLayout.HORIZONTAL);
         buttonsLayout.setGravity(Gravity.CENTER);
-
         FrameLayout.LayoutParams buttonsParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -501,6 +493,11 @@ public class TpaCameraPlugin extends Plugin {
         });
 
         setupButtonListeners();
+    }
+
+    private int dpToPx(Context ctx, int dp) {
+        float density = ctx.getResources().getDisplayMetrics().density;
+        return Math.round(dp * density);
     }
 
     private ImageButton createIconButton(@DrawableRes int drawableId) {
@@ -642,130 +639,129 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
-private void startHighSpeedCaptureSession() {
-    synchronized (cameraLock) {
-        try {
-            Log.d(TAG, "🚀 startHighSpeedCaptureSession() started");
+    private void startHighSpeedCaptureSession() {
+        synchronized (cameraLock) {
+            try {
+                Log.d(TAG, "startHighSpeedCaptureSession() started");
 
-            if (cameraDevice == null) {
-                Log.e(TAG, "cameraDevice is null");
-                return;
-            }
-
-            if (selectedSize == null) {
-                Log.e(TAG, "selectedSize is null");
-                return;
-            }
-
-            if (cameraManager == null || selectedCameraId == null) {
-                Log.e(TAG, "cameraManager or selectedCameraId is null");
-                return;
-            }
-
-            CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
-            StreamConfigurationMap configMap = characteristics.get(
-                CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-
-            if (configMap == null) {
-                Log.e(TAG, "StreamConfigurationMap is null");
-                tryLowerFpsFallback();
-                return;
-            }
-
-            // Verify high speed support
-            Range<Integer>[] fpsRanges = characteristics.get(
-                CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
-
-            boolean highSpeedSupported = false;
-            for (Range<Integer> range : fpsRanges) {
-                if (range.getUpper() >= 120) {
-                    highSpeedSupported = true;
-                    break;
+                if (cameraDevice == null) {
+                    Log.e(TAG, "cameraDevice is null");
+                    return;
                 }
-            }
 
-            if (!highSpeedSupported) {
-                Log.w(TAG, "High speed not supported, falling back to standard");
-                tryStandardSessionAgain();
-                return;
-            }
+                if (selectedSize == null) {
+                    Log.e(TAG, "selectedSize is null");
+                    return;
+                }
 
-            SurfaceTexture surfaceTexture = textureView.getSurfaceTexture();
-            if (surfaceTexture == null) {
-                Log.e(TAG, "SurfaceTexture is null");
-                return;
-            }
+                if (cameraManager == null || selectedCameraId == null) {
+                    Log.e(TAG, "cameraManager or selectedCameraId is null");
+                    return;
+                }
 
-            surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
-            previewSurface = new Surface(surfaceTexture);
+                CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
+                StreamConfigurationMap configMap = characteristics.get(
+                        CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
 
-            List<Surface> surfaces = new ArrayList<>();
-            surfaces.add(previewSurface);
+                if (configMap == null) {
+                    Log.e(TAG, "StreamConfigurationMap is null");
+                    tryLowerFpsFallback();
+                    return;
+                }
 
-            cameraDevice.createConstrainedHighSpeedCaptureSession(
-                surfaces,
-                new CameraCaptureSession.StateCallback() {
-                    @Override
-                    public void onConfigured(@NonNull CameraCaptureSession session) {
-                        synchronized (cameraLock) {
-                            captureSession = session;
-                            try {
-                                CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(
-                                    CameraDevice.TEMPLATE_RECORD);
-                                builder.addTarget(previewSurface);
-                                builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                                    new Range<>(videoFrameRate, videoFrameRate));
-                                builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+                // Verify high speed support
+                Range<Integer>[] fpsRanges = characteristics.get(
+                        CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
 
-                                session.setRepeatingRequest(builder.build(), null, backgroundHandler);
-                                Log.d(TAG, "High speed preview started");
+                boolean highSpeedSupported = false;
+                for (Range<Integer> range : fpsRanges) {
+                    if (range.getUpper() >= 120) {
+                        highSpeedSupported = true;
+                        break;
+                    }
+                }
 
-                                // Fade in preview
-                                Activity activity = getActivity();
-                                if (activity != null) {
-                                    activity.runOnUiThread(() -> {
-                                        if (textureView != null) {
-                                            textureView.setAlpha(1f);
+                if (!highSpeedSupported) {
+                    Log.w(TAG, "High speed not supported, falling back to standard");
+                    tryStandardSessionAgain();
+                    return;
+                }
+
+                SurfaceTexture surfaceTexture = textureView.getSurfaceTexture();
+                if (surfaceTexture == null) {
+                    Log.e(TAG, "SurfaceTexture is null");
+                    return;
+                }
+
+                // Set the size of camera preview (require before using SurfaceTexture)
+                surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
+                previewSurface = new Surface(surfaceTexture);
+
+                List<Surface> surfaces = new ArrayList<>();
+                surfaces.add(previewSurface);
+
+                cameraDevice.createConstrainedHighSpeedCaptureSession(
+                        surfaces,
+                        new CameraCaptureSession.StateCallback() {
+                            @Override
+                            public void onConfigured(@NonNull CameraCaptureSession session) {
+                                synchronized (cameraLock) {
+                                    captureSession = session;
+                                    try {
+                                        CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(
+                                                CameraDevice.TEMPLATE_RECORD);
+                                        builder.addTarget(previewSurface);
+                                        builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                                                new Range<>(videoFrameRate, videoFrameRate));
+                                        builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+
+                                        session.setRepeatingRequest(builder.build(), null, backgroundHandler);
+                                        Log.d(TAG, "High speed preview started");
+
+                                        // Fade in preview
+                                        Activity activity = getActivity();
+                                        if (activity != null) {
+                                            activity.runOnUiThread(() -> {
+                                                if (textureView != null) {
+                                                    textureView.setAlpha(1f);
+                                                }
+                                                if (blackPlaceholder != null && overlay != null) {
+                                                    overlay.removeView(blackPlaceholder);
+                                                }
+                                            });
+                                        } else {
+                                            Log.w(TAG, "getActivity() returned null — skipping UI fade-in");
                                         }
-                                        if (blackPlaceholder != null && overlay != null) {
-                                            overlay.removeView(blackPlaceholder);
-                                        }
-                                    });
-                                } else {
-                                    Log.w(TAG, "getActivity() returned null — skipping UI fade-in");
+
+                                    } catch (CameraAccessException e) {
+                                        Log.e(TAG, "Failed to start high speed preview", e);
+                                        tryLowerFpsFallback();
+                                    }
                                 }
+                            }
 
-                            } catch (CameraAccessException e) {
-                                Log.e(TAG, "Failed to start high speed preview", e);
+                            @Override
+                            public void onConfigureFailed(@NonNull CameraCaptureSession session) {
+                                Log.e(TAG, "High speed configuration failed");
                                 tryLowerFpsFallback();
                             }
-                        }
-                    }
+                        }, backgroundHandler);
 
-                    @Override
-                    public void onConfigureFailed(@NonNull CameraCaptureSession session) {
-                        Log.e(TAG, "High speed configuration failed");
-                        tryLowerFpsFallback();
-                    }
-                },
-                backgroundHandler
-            );
-
-        } catch (CameraAccessException e) {
-            Log.e(TAG, "CameraAccessException during session setup", e);
-            tryLowerFpsFallback();
-        } catch (IllegalStateException e) {
-            Log.e(TAG, "IllegalStateException during session setup", e);
-            tryLowerFpsFallback();
+            } catch (CameraAccessException e) {
+                Log.e(TAG, "CameraAccessException during session setup", e);
+                tryLowerFpsFallback();
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "IllegalStateException during session setup", e);
+                tryLowerFpsFallback();
+            }
         }
     }
-}
 
     private void startHighSpeedPreviewOnlySession() {
         Log.d(TAG, "🎬 startHighSpeedPreviewOnlySession() triggered");
         try {
             if (cameraDevice == null || previewSurface == null) {
-                Log.e(TAG, "❌ Cannot start high-speed session: device or surface is null");
+                Log.e(TAG, "Cannot start high-speed session: device or surface is null");
                 return;
             }
 
@@ -787,47 +783,45 @@ private void startHighSpeedCaptureSession() {
                                 builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
 
                                 session.setRepeatingRequest(builder.build(), null, backgroundHandler);
-                                Log.d(TAG, "✅ High-speed preview started");
+                                Log.d(TAG, "High-speed preview started");
 
                             } catch (CameraAccessException e) {
-                                Log.e(TAG, "⚠️ Failed to start high-speed preview", e);
+                                Log.e(TAG, "Failed to start high-speed preview", e);
                             }
                         }
 
                         @Override
                         public void onConfigureFailed(@NonNull CameraCaptureSession session) {
-                            Log.e(TAG, "❌ High-speed preview config failed");
+                            Log.e(TAG, "High-speed preview config failed");
                         }
                     },
                     backgroundHandler);
         } catch (CameraAccessException e) {
-            Log.e(TAG, "⚠️ Failed to start constrained high-speed session", e);
+            Log.e(TAG, "Failed to start constrained high-speed session", e);
         }
     }
 
-     private void tryLowerFpsFallback() {
+    private void tryLowerFpsFallback() {
         synchronized (cameraLock) {
             try {
                 if (videoFrameRate >= 240) {
-                    Log.w(TAG, "Falling back from 240fps to 120fps");
+                    Log.w(TAG, "240fps failed ➡︎ trying 120fps");
                     videoFrameRate = 120;
                     startHighSpeedCaptureSession();
                 } else if (videoFrameRate >= 120) {
-                    Log.w(TAG, "Falling back from 120fps to 60fps");
+                    Log.w(TAG, "120fps failed ➡︎ trying 60fps");
                     videoFrameRate = 60;
                     startStandardCaptureSession();
                 } else if (videoFrameRate >= 60) {
-                    Log.w(TAG, "Falling back from 60fps to 30fps");
+                    Log.w(TAG, "60fps failed ➡︎ trying 30fps");
                     videoFrameRate = 30;
                     startStandardCaptureSession();
                 } else {
-                    Log.e(TAG, "No more fallback options available");
-                    rejectIfPossible("Could not initialize camera at any supported frame rate");
+                    rejectIfPossible("All failback attempts failed (fps & resolution)");
                     cleanupResources();
                 }
             } catch (Exception e) {
-                Log.e(TAG, "Fallback failed", e);
-                rejectIfPossible("Camera initialization failed: " + e.getMessage());
+                rejectIfPossible("package " + e.getMessage());
                 cleanupResources();
             }
         }
@@ -847,7 +841,7 @@ private void startHighSpeedCaptureSession() {
             startStandardCaptureSession();
             Log.d(TAG, "Final fallback: standard session @ " + videoFrameRate + "fps");
         } catch (Exception e) {
-            rejectIfPossible("❌ Standard fallback failed: " + e.getMessage());
+            rejectIfPossible("Standard fallback failed: " + e.getMessage());
         }
     }
 
@@ -882,7 +876,7 @@ private void startHighSpeedCaptureSession() {
         // Reset old MediaRecorder if it exists
         safeReleaseMediaRecorder();
 
-        // setup MediaRecorder after surfaces are ready
+        // Setup MediaRecorder after surfaces are ready
         setupMediaRecorder();
         Surface recorderSurface = mediaRecorder.getSurface();
         if (recorderSurface == null) {
@@ -1070,6 +1064,7 @@ private void startHighSpeedCaptureSession() {
         // Rotate and fix upside-down
         matrix.postRotate(90 * (rotation - 2), centerX, centerY);
         matrix.postScale(1, -1, centerX, centerY); // Fix vertical flip
+        matrix.postScale(-1, 1, centerX, centerY); // Fix horizontal flip
 
         textureView.setTransform(matrix);
     }
@@ -1372,7 +1367,8 @@ private void startHighSpeedCaptureSession() {
         if (storedCall == null) {
             Log.w(TAG, "storedCall is null. Could not reject: " + errorMessage);
             return;
-        }
+        } else
+            Log.w(TAG, "storedCall is not null, Returning message -=> ", errorMessage);
 
         JSObject result = new JSObject();
         result.put("videoPath", "");
@@ -1383,8 +1379,7 @@ private void startHighSpeedCaptureSession() {
         result.put("sizeLimit", sizeLimit);
         result.put("fileSizeMB", 0);
 
-        Log.d(TAG, "Result JSON: " + result.toString());
-
+        Log.d(TAG, "Result JSON:\n" + result.toString());
         storedCall.resolve(result);
         storedCall = null;
     }
@@ -1405,4 +1400,5 @@ private void startHighSpeedCaptureSession() {
                 return "UNKNOWN CAMERA ERROR (" + errorCode + ")";
         }
     }
+
 }
