@@ -9,13 +9,13 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
+import android.graphics.drawable.GradientDrawable;
 import android.hardware.camera2.*;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.MediaRecorder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 import android.util.Range;
@@ -26,6 +26,7 @@ import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
@@ -53,6 +54,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import android.graphics.Rect;
+import android.os.Looper;
 
 @CapacitorPlugin(name = "TpaCamera", permissions = {
         @Permission(strings = {
@@ -104,7 +106,7 @@ public class TpaCameraPlugin extends Plugin {
         }
     };
 
-    // Pose check loop
+    // ONNX Pose check loop
     // private final Handler poseCheckHandler = new Handler();
     // private Runnable poseCheckRunnable;
 
@@ -136,9 +138,14 @@ public class TpaCameraPlugin extends Plugin {
         Log.d(TAG, " --> fps: " + videoFrameRate);
         Log.d(TAG, " --> sizeLimit: " + sizeLimit);
         Log.d(TAG, " --> resolution: " + resolution);
+        Log.d(TAG, " ==> Device Info:");
+        Log.d(TAG, "   - Manufacturer: " + Build.MANUFACTURER);
+        Log.d(TAG, "   - Model       : " + Build.MODEL);
+        Log.d(TAG, "   - Android API : " + Build.VERSION.SDK_INT + " (" + Build.VERSION.RELEASE + ")");
 
         // ONNX: Only lighting check
         // -------------------------------------------------
+
         if (preCheck == null) {
             preCheck = new onnxPreChecking(getContext());
 
@@ -155,9 +162,11 @@ public class TpaCameraPlugin extends Plugin {
         // -------------------------------------------------
 
         try {
+            // Full reset before reusing
             cleanupResources();
             stopBackgroundThread();
 
+            // Start fresh
             startBackgroundThread();
             cameraDevice = null;
             captureSession = null;
@@ -172,6 +181,7 @@ public class TpaCameraPlugin extends Plugin {
                 try {
                     showCameraPreview();
 
+                    // Hide WebView for native fullscreen
                     View webView = getBridge().getWebView();
                     if (webView != null) {
                         webView.setVisibility(View.GONE);
@@ -182,13 +192,13 @@ public class TpaCameraPlugin extends Plugin {
                 }
             });
 
-            // Pose check loop-----------------------------------
+            // ONNX Pose check loop-----------------------------------
             // poseCheckRunnable = new Runnable() {
             // @Override
             // public void run() {
             // if (textureView != null && textureView.isAvailable() && preCheck != null) {
             // preCheck.checkPoseAndMaybeStartRecording(textureView, () -> {
-            // Log.d(TAG, "✅ Pose confirmed — Starting recording...");
+            // Log.d(TAG, " Pose confirmed — Starting recording...");
             // poseCheckHandler.removeCallbacks(poseCheckRunnable);
             // startRecordingInternal();
             // });
@@ -204,6 +214,7 @@ public class TpaCameraPlugin extends Plugin {
             stopBackgroundThread();
             call.reject("Failed to start recording: " + e.getMessage());
 
+            // Try restoring WebView
             getActivity().runOnUiThread(() -> {
                 try {
                     View webView = getBridge().getWebView();
@@ -249,79 +260,91 @@ public class TpaCameraPlugin extends Plugin {
             throw new IllegalStateException("Cannot access camera configuration");
         }
 
-        Size[] availableSizes = configMap.getOutputSizes(MediaRecorder.class);
-        Range<Integer>[] highSpeedRanges;
-
-        // Define preferred sizes based on input
-        Size preferredSize;
-        switch (resolution) {
-            case "4k":
-                preferredSize = new Size(3840, 2160);
-                break;
-            case "1080p":
-                preferredSize = new Size(1920, 1080);
-                break;
-            case "720p":
-            default:
-                preferredSize = new Size(1280, 720);
-                break;
+        // Log full devie capability matrix
+        Log.d(TAG, "Supported High-Speed Video Sizes and FPS Ranges:");
+        for (Size size : configMap.getHighSpeedVideoSizes()) {
+            try {
+                Range<Integer>[] ranges = configMap.getHighSpeedVideoFpsRangesFor(size);
+                for (Range<Integer> r : ranges) {
+                    Log.d(TAG, size.getWidth() + "x" + size.getHeight() + " @ " + r.getLower() + "–"
+                            + r.getUpper() + " fps");
+                }
+            } catch (IllegalArgumentException e) {
+                Log.w(TAG, size + " (not valid for high-speed)");
+            }
         }
 
-        // Try to use high-speed mode (≥120fps)
-        boolean useHighSpeed = requestedFps > 60;
-
-        // Fallback logic
+        Size[] availableSizes = configMap.getOutputSizes(MediaRecorder.class);
         selectedSize = null;
         videoFrameRate = 30;
 
-        if (useHighSpeed) {
-            try {
-                highSpeedRanges = configMap.getHighSpeedVideoFpsRangesFor(preferredSize);
-                for (Range<Integer> range : highSpeedRanges) {
-                    if (range.getLower() <= requestedFps && range.getUpper() >= requestedFps) {
-                        selectedSize = preferredSize;
-                        videoFrameRate = requestedFps;
-                        Log.d(TAG, "Using high-speed mode: " + selectedSize + " @" + videoFrameRate + "fps");
-                        return;
-                    }
-                }
-            } catch (IllegalArgumentException e) {
-                Log.w(TAG, "Requested size not valid for high-speed: " + preferredSize);
-            }
+        List<Integer> fallbackFpsList = Arrays.asList(240, 120, 60, 30);
+        List<Size> resolutionPriority = Arrays.asList(
+                new Size(1920, 1080), // Full HD
+                new Size(1280, 720) // HD
+        );
 
-            // Fallback to supported high-speed sizes
-            for (Size size : configMap.getHighSpeedVideoSizes()) {
-                highSpeedRanges = configMap.getHighSpeedVideoFpsRangesFor(size);
-                for (Range<Integer> range : highSpeedRanges) {
-                    int maxFps = range.getUpper();
-                    if (maxFps >= 120) {
-                        selectedSize = size;
-                        videoFrameRate = Math.min(requestedFps, maxFps);
-                        Log.w(TAG, "Fallback to high-speed: " + selectedSize + " @" + videoFrameRate + "fps");
-                        return;
+        // === Fallback Decision Trace ===
+        for (int targetFps : fallbackFpsList) {
+            for (Size size : resolutionPriority) {
+                Log.d(TAG, "Trying Fallback: " + size.getWidth() + "x" + size.getHeight() + " @ " + targetFps + "fps");
+
+                try {
+                    List<Size> supportedHighSpeedSizes = Arrays.asList(configMap.getHighSpeedVideoSizes());
+                    if (!supportedHighSpeedSizes.contains(size)) {
+                        Log.d(TAG, "Not in supportedHighSpeedSizes");
+                        continue;
                     }
+
+                    Range<Integer>[] ranges = configMap.getHighSpeedVideoFpsRangesFor(size);
+                    if (ranges == null) {
+                        Log.d(TAG, "No FPS range info");
+                        continue;
+                    }
+
+                    for (Range<Integer> range : ranges) {
+                        if (range.getLower() <= targetFps && range.getUpper() >= targetFps) {
+                            selectedSize = size;
+                            videoFrameRate = targetFps;
+                            Log.d(TAG, "Selected high-speed config: " + selectedSize + " @" + videoFrameRate + "fps");
+                            return;
+                        }
+                    }
+
+                    Log.d(TAG, "FPS " + targetFps + " not in supported range for this size");
+
+                } catch (IllegalArgumentException e) {
+                    Log.w(TAG, "IllegalArgumentException for size " + size + ": " + e.getMessage());
                 }
             }
-
-            Log.w(TAG, "No high-speed mode supported, falling back to standard recording.");
         }
 
-        // Standard fallback mode (≤60fps)
+        Log.w(TAG, "No high-speed config matched. Falling back to standard mode.");
+
+        Size preferredMax = resolution.equals("4k") ? new Size(3840, 2160)
+                : resolution.equals("1080p") ? new Size(1920, 1080)
+                        : new Size(1280, 720);
+
+        Size bestStandardSize = null;
         int bestArea = 0;
         for (Size size : availableSizes) {
             int area = size.getWidth() * size.getHeight();
-            if (area > bestArea && size.getWidth() <= preferredSize.getWidth()) {
-                selectedSize = size;
+            if (area > bestArea && size.getWidth() <= preferredMax.getWidth()) {
+                bestStandardSize = size;
                 bestArea = area;
             }
         }
 
-        if (selectedSize == null) {
-            selectedSize = availableSizes[0]; // last resort fallback
+        if (bestStandardSize != null) {
+            selectedSize = bestStandardSize;
+        } else if (availableSizes.length > 0) {
+            selectedSize = availableSizes[0];
+        } else {
+            throw new IllegalStateException("No valid MediaRecorder sizes available");
         }
 
-        videoFrameRate = Math.min(requestedFps, 60); // cap to 60fps in standard mode
-        Log.w(TAG, "Using standard mode fallback: " + selectedSize + " @" + videoFrameRate + "fps");
+        videoFrameRate = Math.min(requestedFps, 30);
+        Log.d(TAG, "Selected standard config: " + selectedSize + " @" + videoFrameRate + "fps");
     }
 
     private void startBackgroundThread() {
@@ -418,7 +441,7 @@ public class TpaCameraPlugin extends Plugin {
                 FrameLayout.LayoutParams.MATCH_PARENT));
         overlay.setBackgroundColor(0xFF000000);
 
-        // Black placeholder to prevent flash before TextureView is ready
+        // Black placeholder to present flash before TextureView is ready
         blackPlaceholder = new View(activity);
         blackPlaceholder.setLayoutParams(new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -431,7 +454,7 @@ public class TpaCameraPlugin extends Plugin {
         textureView.setKeepScreenOn(true); // prevent screen from sleeping
         overlay.addView(textureView);
 
-        // 🆕 Grid Overlay added just after textureView
+        // Grid Overlay added just after textureView
         GridOverlay gridOverlay = new GridOverlay(activity);
         gridOverlay.setLayoutParams(new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -441,15 +464,22 @@ public class TpaCameraPlugin extends Plugin {
         // Timer
         timerView = new TextView(activity);
         timerView.setText("00:00");
-        timerView.setTextSize(24);
+        timerView.setTextSize(12);
         timerView.setTextColor(0xFFFFFFFF);
-        timerView.setBackgroundColor(0xAA000000);
-        timerView.setPadding(20, 10, 20, 10);
+        timerView.setPadding(dpToPx(activity, 12), dpToPx(activity, 6),
+                dpToPx(activity, 12), dpToPx(activity, 6));
+
+        GradientDrawable timerBg = new GradientDrawable();
+        timerBg.setColor(0xAA000000); // semi-transparent black
+        timerBg.setCornerRadius(dpToPx(activity, 8)); // rounded corners
+        timerBg.setStroke(dpToPx(activity, 1), Color.GRAY); // gray outline
+        timerView.setBackground(timerBg);
+
         FrameLayout.LayoutParams timerParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        timerParams.setMargins(0, 50, 0, 0);
+        timerParams.setMargins(0, dpToPx(activity, 80), 0, 0);
         timerView.setLayoutParams(timerParams);
         overlay.addView(timerView);
 
@@ -466,17 +496,22 @@ public class TpaCameraPlugin extends Plugin {
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        buttonsParams.setMargins(0, 0, 0, 60);
+        buttonsParams.setMargins(0, 0, 0, dpToPx(activity, 48));
         buttonsLayout.setLayoutParams(buttonsParams);
 
-        int buttonSize = 160;
-        LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(buttonSize, buttonSize);
-        buttonParams.setMargins(30, 0, 30, 0);
+        int buttonSizeDp = 48;
+        int spacingDp = 12;
 
-        recordButton.setLayoutParams(buttonParams);
-        backButton.setLayoutParams(buttonParams);
-        pauseButton.setLayoutParams(buttonParams);
-        stopButton.setLayoutParams(buttonParams);
+        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(
+                dpToPx(activity, buttonSizeDp),
+                dpToPx(activity, buttonSizeDp));
+        btnLp.setMargins(dpToPx(activity, spacingDp), 0,
+                dpToPx(activity, spacingDp), 0);
+
+        recordButton.setLayoutParams(btnLp);
+        backButton.setLayoutParams(btnLp);
+        pauseButton.setLayoutParams(btnLp);
+        stopButton.setLayoutParams(btnLp);
 
         buttonsLayout.addView(backButton);
         buttonsLayout.addView(recordButton);
@@ -486,6 +521,19 @@ public class TpaCameraPlugin extends Plugin {
         pauseButton.setVisibility(View.GONE);
         stopButton.setVisibility(View.GONE);
 
+        buttonsLayout.setOnApplyWindowInsetsListener((v, insets) -> {
+            int bottomInset = dpToPx(activity, 48);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                bottomInset += insets.getInsets(WindowInsets.Type.systemBars()).bottom;
+            } else {
+                bottomInset += insets.getSystemWindowInsetBottom();
+            }
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) buttonsLayout.getLayoutParams();
+            lp.setMargins(0, 0, 0, bottomInset);
+            buttonsLayout.setLayoutParams(lp);
+            return insets;
+        });
+
         overlay.addView(buttonsLayout);
 
         activity.runOnUiThread(() -> {
@@ -494,6 +542,11 @@ public class TpaCameraPlugin extends Plugin {
         });
 
         setupButtonListeners();
+    }
+
+    private int dpToPx(Context ctx, int dp) {
+        float density = ctx.getResources().getDisplayMetrics().density;
+        return Math.round(dp * density);
     }
 
     private ImageButton createIconButton(@DrawableRes int drawableId) {
@@ -592,7 +645,7 @@ public class TpaCameraPlugin extends Plugin {
                         cameraDevice = camera;
                     }
 
-                    backgroundHandler.post(() -> {
+                    backgroundHandler.postDelayed(() -> {
                         try {
                             synchronized (cameraLock) {
                                 if (cameraDevice == null) {
@@ -610,7 +663,7 @@ public class TpaCameraPlugin extends Plugin {
                             rejectIfPossible(e.getMessage());
                             getActivity().runOnUiThread(() -> cleanupResources());
                         }
-                    });
+                    }, 400);
                 }
 
                 @Override
@@ -624,7 +677,8 @@ public class TpaCameraPlugin extends Plugin {
                 public void onError(@NonNull CameraDevice camera, int error) {
                     camera.close();
                     cameraDevice = null;
-                    rejectIfPossible("Camera error: " + error);
+                    String fullError = getCameraErrorMessage(error);
+                    rejectIfPossible(fullError);
                     getActivity().runOnUiThread(() -> cleanupResources());
                 }
             }, backgroundHandler);
@@ -634,118 +688,230 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
-    private void startHighSpeedCaptureSession() throws Exception {
-        if (cameraDevice == null) {
-            rejectIfPossible("cameraDevice is null – aborting high-speed session setup");
-            return;
-        }
+    private void startHighSpeedCaptureSession() {
+        synchronized (cameraLock) {
+            try {
+                Log.d(TAG, "startHighSpeedCaptureSession() started");
 
-        CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
-        StreamConfigurationMap configMap = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-        if (configMap == null || configMap.getHighSpeedVideoSizes() == null) {
-            Log.w(TAG, "High-speed not supported, falling back to standard");
-            startStandardCaptureSession();
-            return;
-        }
-
-        SurfaceTexture surfaceTexture = textureView.getSurfaceTexture();
-        if (surfaceTexture == null) {
-            throw new IllegalStateException("Surface texture not available");
-        }
-
-        surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
-        previewSurface = new Surface(surfaceTexture);
-
-        safeReleaseMediaRecorder();
-
-        // Setup MediaRecorder AFTER surfaces are ready
-        setupMediaRecorder();
-        Surface recorderSurface = mediaRecorder.getSurface();
-        if (recorderSurface == null) {
-            throw new IllegalStateException("Recorder surface is null after prepare()");
-        }
-
-        List<Surface> surfaces = new ArrayList<>();
-        surfaces.add(previewSurface);
-        surfaces.add(recorderSurface);
-
-        cameraDevice.createConstrainedHighSpeedCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
-            @Override
-            public void onConfigured(@NonNull CameraCaptureSession session) {
                 if (cameraDevice == null) {
-                    rejectIfPossible("cameraDevice became null after session configuration");
-                    cleanupResources();
+                    Log.e(TAG, "cameraDevice is null");
                     return;
                 }
 
-                captureSession = session;
-
-                try {
-                    CameraConstrainedHighSpeedCaptureSession hsSession = (CameraConstrainedHighSpeedCaptureSession) session;
-
-                    CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-                    builder.addTarget(previewSurface);
-                    builder.addTarget(recorderSurface);
-                    builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-                    builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                            new Range<>(videoFrameRate, videoFrameRate));
-
-                    Rect sensorRect = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
-                    if (sensorRect == null) {
-                        Log.w(TAG, "Sensor info not available, using default crop");
-                        sensorRect = new Rect(0, 0, selectedSize.getWidth(), selectedSize.getHeight());
-                    }
-                    builder.set(CaptureRequest.SCALER_CROP_REGION, sensorRect);
-
-                    hsSession.setRepeatingBurst(
-                            hsSession.createHighSpeedRequestList(builder.build()),
-                            null,
-                            backgroundHandler);
-
-                    textureView.post(() -> {
-                        configureTransform(textureView.getWidth(), textureView.getHeight());
-                        fadeTo(textureView, 1f, 300); // Fade in
-
-                        if (blackPlaceholder != null) {
-                            blackPlaceholder.animate()
-                                    .alpha(0f)
-                                    .setDuration(200)
-                                    .withEndAction(() -> {
-                                        try {
-                                            overlay.removeView(blackPlaceholder);
-                                        } catch (Exception e) {
-                                            Log.e(TAG, "Failed to remove blackPlaceholder", e);
-                                        }
-                                    })
-                                    .start();
-                        }
-
-                        if (blackOverlayView != null) {
-                            ViewGroup root = (ViewGroup) getActivity().findViewById(android.R.id.content);
-                            root.removeView(blackOverlayView);
-                            blackOverlayView = null;
-                        }
-                    });
-
-                    getActivity().runOnUiThread(() -> {
-                        recordButton.setVisibility(View.VISIBLE);
-                        Toast.makeText(getContext(), "Ready: " + videoFrameRate + "fps " +
-                                selectedSize.getWidth() + "x" + selectedSize.getHeight(), Toast.LENGTH_SHORT).show();
-                    });
-
-                } catch (Exception e) {
-                    rejectIfPossible("Failed to start preview: " + e.getMessage());
-                    getActivity().runOnUiThread(() -> cleanupResources());
+                if (selectedSize == null) {
+                    Log.e(TAG, "selectedSize is null");
+                    return;
                 }
+
+                if (cameraManager == null || selectedCameraId == null) {
+                    Log.e(TAG, "cameraManager or selectedCameraId is null");
+                    return;
+                }
+
+                CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
+                StreamConfigurationMap configMap = characteristics.get(
+                        CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+
+                if (configMap == null) {
+                    Log.e(TAG, "StreamConfigurationMap is null");
+                    tryLowerFpsFallback();
+                    return;
+                }
+
+                // Verify high speed support
+                Range<Integer>[] fpsRanges = characteristics.get(
+                        CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+
+                boolean highSpeedSupported = false;
+                for (Range<Integer> range : fpsRanges) {
+                    if (range.getUpper() >= 120) {
+                        highSpeedSupported = true;
+                        break;
+                    }
+                }
+
+                if (!highSpeedSupported) {
+                    Log.w(TAG, "High speed not supported, falling back to standard");
+                    tryStandardSessionAgain();
+                    return;
+                }
+
+                SurfaceTexture surfaceTexture = textureView.getSurfaceTexture();
+                if (surfaceTexture == null) {
+                    Log.e(TAG, "SurfaceTexture is null");
+                    return;
+                }
+
+                // Set the size of camera preview (require before using SurfaceTexture)
+                surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
+                previewSurface = new Surface(surfaceTexture);
+
+                List<Surface> surfaces = new ArrayList<>();
+                surfaces.add(previewSurface);
+
+                cameraDevice.createConstrainedHighSpeedCaptureSession(
+                        surfaces,
+                        new CameraCaptureSession.StateCallback() {
+                            @Override
+                            public void onConfigured(@NonNull CameraCaptureSession session) {
+                                synchronized (cameraLock) {
+                                    captureSession = session;
+                                    try {
+                                        CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(
+                                                CameraDevice.TEMPLATE_RECORD);
+                                        builder.addTarget(previewSurface);
+                                        builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                                                new Range<>(videoFrameRate, videoFrameRate));
+                                        builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+
+                                        session.setRepeatingRequest(builder.build(), null, backgroundHandler);
+                                        Log.d(TAG, "High speed preview started");
+
+                                        // Fade in preview
+                                        Activity activity = getActivity();
+                                        if (activity != null) {
+                                            activity.runOnUiThread(() -> {
+                                                if (textureView != null) {
+                                                    textureView.setAlpha(1f);
+                                                }
+                                                if (blackPlaceholder != null && overlay != null) {
+                                                    overlay.removeView(blackPlaceholder);
+                                                }
+                                            });
+                                        } else {
+                                            Log.w(TAG, "getActivity() returned null — skipping UI fade-in");
+                                        }
+
+                                    } catch (CameraAccessException e) {
+                                        Log.e(TAG, "Failed to start high speed preview", e);
+                                        tryLowerFpsFallback();
+                                    }
+                                }
+                            }
+
+                            @Override
+                            public void onConfigureFailed(@NonNull CameraCaptureSession session) {
+                                Log.e(TAG, "High speed configuration failed");
+                                tryLowerFpsFallback();
+                            }
+                        }, backgroundHandler);
+
+            } catch (CameraAccessException e) {
+                Log.e(TAG, "CameraAccessException during session setup", e);
+                tryLowerFpsFallback();
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "IllegalStateException during session setup", e);
+                tryLowerFpsFallback();
+            }
+        }
+    }
+
+    private void startHighSpeedPreviewOnlySession() {
+        Log.d(TAG, "🎬 startHighSpeedPreviewOnlySession() triggered");
+        try {
+            if (cameraDevice == null || previewSurface == null) {
+                Log.e(TAG, "Cannot start high-speed session: device or surface is null");
+                return;
             }
 
-            @Override
-            public void onConfigureFailed(@NonNull CameraCaptureSession session) {
-                Log.e(TAG, "High-speed session configuration failed");
-                rejectIfPossible("High-speed configuration failed");
-                getActivity().runOnUiThread(() -> cleanupResources());
+            List<Surface> surfaces = new ArrayList<>();
+            surfaces.add(previewSurface);
+
+            cameraDevice.createConstrainedHighSpeedCaptureSession(
+                    surfaces,
+                    new CameraCaptureSession.StateCallback() {
+                        @Override
+                        public void onConfigured(@NonNull CameraCaptureSession session) {
+                            captureSession = session;
+                            try {
+                                CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(
+                                        CameraDevice.TEMPLATE_PREVIEW);
+                                builder.addTarget(previewSurface);
+                                builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                                        new Range<>(videoFrameRate, videoFrameRate));
+                                builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+
+                                session.setRepeatingRequest(builder.build(), null, backgroundHandler);
+                                Log.d(TAG, "High-speed preview started");
+
+                            } catch (CameraAccessException e) {
+                                Log.e(TAG, "Failed to start high-speed preview", e);
+                            }
+                        }
+
+                        @Override
+                        public void onConfigureFailed(@NonNull CameraCaptureSession session) {
+                            Log.e(TAG, "High-speed preview config failed");
+                        }
+                    },
+                    backgroundHandler);
+        } catch (CameraAccessException e) {
+            Log.e(TAG, "Failed to start constrained high-speed session", e);
+        }
+    }
+
+    private void tryLowerFpsFallback() {
+        synchronized (cameraLock) {
+            try {
+                if (videoFrameRate >= 240) {
+                    Log.w(TAG, "240fps failed ➡︎ trying 120fps");
+                    videoFrameRate = 120;
+                    startHighSpeedCaptureSession();
+                } else if (videoFrameRate >= 120) {
+                    Log.w(TAG, "120fps failed ➡︎ trying 60fps");
+                    videoFrameRate = 60;
+                    startStandardCaptureSession();
+                } else if (videoFrameRate >= 60) {
+                    Log.w(TAG, "60fps failed ➡︎ trying 30fps");
+                    videoFrameRate = 30;
+                    startStandardCaptureSession();
+                } else {
+                    rejectIfPossible("All failback attempts failed (fps & resolution)");
+                    cleanupResources();
+                }
+            } catch (Exception e) {
+                rejectIfPossible("package " + e.getMessage());
+                cleanupResources();
             }
-        }, backgroundHandler);
+        }
+    }
+
+    private void tryHighSpeedAgain() {
+        try {
+            startHighSpeedCaptureSession();
+        } catch (Exception e) {
+            Log.w(TAG, "High-speed retry failed. Trying standard...", e);
+            tryStandardSessionAgain();
+        }
+    }
+
+    private void tryStandardSessionAgain() {
+        try {
+            startStandardCaptureSession();
+            Log.d(TAG, "Final fallback: standard session @ " + videoFrameRate + "fps");
+        } catch (Exception e) {
+            rejectIfPossible("Standard fallback failed: " + e.getMessage());
+        }
+    }
+
+    private void onPreviewSuccess() {
+        Log.d(TAG, "Preview started successfully");
+
+        getActivity().runOnUiThread(() -> {
+            if (textureView != null) {
+                textureView.setAlpha(1f); // Remove fade-in effect if any
+            }
+
+            // Show only initial buttons
+            if (recordButton != null)
+                recordButton.setVisibility(View.VISIBLE);
+            if (pauseButton != null)
+                pauseButton.setVisibility(View.GONE);
+            if (stopButton != null)
+                stopButton.setVisibility(View.GONE);
+            if (backButton != null)
+                backButton.setVisibility(View.VISIBLE);
+        });
     }
 
     private void startStandardCaptureSession() throws Exception {
@@ -817,7 +983,6 @@ public class TpaCameraPlugin extends Plugin {
                     });
 
                     getActivity().runOnUiThread(() -> {
-                        recordButton.setVisibility(View.VISIBLE);
                         Toast.makeText(getContext(), "Ready: " + videoFrameRate + "fps " +
                                 selectedSize.getWidth() + "x" + selectedSize.getHeight(), Toast.LENGTH_SHORT).show();
                     });
@@ -953,6 +1118,7 @@ public class TpaCameraPlugin extends Plugin {
         // Rotate and fix upside-down
         matrix.postRotate(90 * (rotation - 2), centerX, centerY);
         matrix.postScale(1, -1, centerX, centerY); // Fix vertical flip
+        matrix.postScale(-1, 1, centerX, centerY); // Fix horizontal flip
 
         textureView.setTransform(matrix);
     }
@@ -1208,16 +1374,6 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
-    private void rejectIfPossible(String message) {
-        if (storedCall != null) {
-            Log.e(TAG, message);
-            storedCall.reject(message);
-            storedCall = null;
-        } else
-            Log.w(TAG, "storedCall is null. Could not reject: " + message);
-
-    }
-
     private void safeReleaseMediaRecorder() {
         if (mediaRecorder != null) {
             try {
@@ -1261,8 +1417,45 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
-    // -------------------------------------------- pose
+    private void rejectIfPossible(String errorMessage) {
+        if (storedCall == null) {
+            Log.w(TAG, "storedCall is null. Could not reject: " + errorMessage);
+            return;
+        } else
+            Log.w(TAG, "storedCall is not null, Returning message -=> " + errorMessage);
 
+        JSObject result = new JSObject();
+        result.put("videoPath", "");
+        result.put("error", errorMessage);
+        result.put("frameRate", videoFrameRate);
+        result.put("resolution", selectedSize != null ? selectedSize.getWidth() + "x" + selectedSize.getHeight() : "");
+        result.put("duration", 0);
+        result.put("sizeLimit", sizeLimit);
+        result.put("fileSizeMB", 0);
+
+        Log.d(TAG, "Result JSON:\n" + result.toString());
+        storedCall.resolve(result);
+        storedCall = null;
+    }
+
+    private String getCameraErrorMessage(int errorCode) {
+        switch (errorCode) {
+            case CameraDevice.StateCallback.ERROR_CAMERA_IN_USE:
+                return "ERROR_CAMERA_IN_USE (1): Camera is already in use by another app.";
+            case CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE:
+                return "ERROR_MAX_CAMERAS_IN_USE (2): Too many cameras are in use simultaneously.";
+            case CameraDevice.StateCallback.ERROR_CAMERA_DISABLED:
+                return "ERROR_CAMERA_DISABLED (3): Camera is disabled due to device policy.";
+            case CameraDevice.StateCallback.ERROR_CAMERA_DEVICE:
+                return "ERROR_CAMERA_DEVICE (4): Fatal error. Camera must be closed and reopened.";
+            case CameraDevice.StateCallback.ERROR_CAMERA_SERVICE:
+                return "ERROR_CAMERA_SERVICE (5): Camera service has crashed. Restart required.";
+            default:
+                return "UNKNOWN CAMERA ERROR (" + errorCode + ")";
+        }
+    }
+
+    // -------------------------------------------- ONNX pose
     // public void checkPoseAndMaybeStartRecording(TextureView textureView, Runnable
     // onConfirmed) {
     // if (textureView == null || !textureView.isAvailable()) {
@@ -1303,7 +1496,7 @@ public class TpaCameraPlugin extends Plugin {
     // sayCenterYourselfWarning();
     // } else {
     // sayFaceOK();
-    // onConfirmed.run(); // ✅ Start recording!
+    // onConfirmed.run(); // Start recording!
     // }
     // })
     // .addOnFailureListener(e -> {
