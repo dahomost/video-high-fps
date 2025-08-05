@@ -44,6 +44,9 @@ import com.getcapacitor.PermissionState;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
+import com.google.mlkit.vision.pose.PoseDetection;
+import com.google.mlkit.vision.pose.PoseDetector;
+import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions;
 
 import java.io.File;
 import java.io.IOException;
@@ -54,8 +57,6 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import android.graphics.Rect;
-import android.os.Looper;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 // ONNX
 import android.graphics.Bitmap;
@@ -63,10 +64,6 @@ import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.pose.PoseLandmark;
 import android.speech.tts.TextToSpeech;
 import com.google.mlkit.vision.pose.Pose;
-
-import com.google.mlkit.vision.pose.PoseDetection;
-import com.google.mlkit.vision.pose.PoseDetector;
-import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions;
 
 @CapacitorPlugin(name = "TpaCamera", permissions = {
         @Permission(strings = {
@@ -102,11 +99,11 @@ public class TpaCameraPlugin extends Plugin {
     private View blackPlaceholder;
     private final Object cameraLock = new Object();
 
-    // ONNX:
+    // ONNX
     private onnxPreChecking preCheck;
     private PoseDetector poseDetector;
 
-    // ONNX: Pose detection handler with 1-second interval
+    // Pose detection handler with 1-second interval
     private final Handler poseHandler = new Handler();
     private int poseDetectionInterval = 1000; // Start with 1 second
 
@@ -219,7 +216,7 @@ public class TpaCameraPlugin extends Plugin {
         }
     };
 
-    // ONNX: Start pose detection with dynamic interval
+    // Start pose detection with dynamic interval
     public void startPoseDetection() {
         poseHandler.post(poseRunnable); // Ensure this is inside a method that is executed
     }
@@ -245,6 +242,7 @@ public class TpaCameraPlugin extends Plugin {
         this.storedCall = call;
         this.cameraManager = (CameraManager) getContext().getSystemService(Context.CAMERA_SERVICE);
 
+        // Check permission before proceeding
         if (getPermissionState("camera") != PermissionState.GRANTED) {
             requestPermissionForAlias("camera", call, "onCameraPermissionResult");
             return;
@@ -260,14 +258,14 @@ public class TpaCameraPlugin extends Plugin {
         // ✅ Safe FeedbackHelper initialization (no crash on null)
         initializeFeedbackHelper();
 
-        // ✅ ONNX: Initialize pose detector (only once)
+        // ONNX: Initialize pose detector (only once)
         if (poseDetector == null) {
             poseDetector = PoseDetection.getClient(new PoseDetectorOptions.Builder()
                     .setDetectorMode(PoseDetectorOptions.STREAM_MODE)
                     .build());
         }
 
-        // Read parameters
+        // Read parameters for video recording
         Integer fpsOpt = call.getInt("fps");
         this.videoFrameRate = (fpsOpt != null) ? fpsOpt : 240;
 
@@ -281,13 +279,20 @@ public class TpaCameraPlugin extends Plugin {
         Log.d(TAG, " --> fps: " + videoFrameRate);
         Log.d(TAG, " --> sizeLimit: " + sizeLimit);
         Log.d(TAG, " --> resolution: " + resolution);
-        Log.d(TAG, " ==> Device Info:");
-        Log.d(TAG, "   - Manufacturer: " + Build.MANUFACTURER);
-        Log.d(TAG, "   - Model       : " + Build.MODEL);
-        Log.d(TAG, "   - Android API : " + Build.VERSION.SDK_INT + " (" + Build.VERSION.RELEASE + ")");
 
+        // Start lighting check
+        Log.d(TAG, "✅ [ONNX] Preparing lighting monitor...");
+        getActivity().runOnUiThread(() -> {
+            if (textureView != null && textureView.isAvailable()) {
+                preCheck.startReactiveLightingCheck(textureView);
+                Log.d(TAG, "✅ [ONNX] Lighting check started");
+            } else {
+                Log.w(TAG, "⚠️ [ONNX] TextureView not available yet");
+            }
+        });
+
+        // Camera initialization and preview
         try {
-            // Full reset before reusing
             cleanupResources();
             stopBackgroundThread();
 
@@ -306,10 +311,7 @@ public class TpaCameraPlugin extends Plugin {
                 try {
                     showCameraPreview();
 
-                    // ✅ Start ONNX pose check loop after preview is ready
-                    runPoseValidationLoop();
-
-                    // ✅ Hide WebView for full screen native mode
+                    // Hide WebView for native fullscreen
                     View webView = getBridge().getWebView();
                     if (webView != null) {
                         webView.setVisibility(View.GONE);
@@ -320,26 +322,43 @@ public class TpaCameraPlugin extends Plugin {
                 }
             });
 
+            // Check Lighting and Pose after some time (recheck loop)
+            new Handler().postDelayed(() -> {
+                // First, check lighting
+                preCheck.startReactiveLightingCheck(textureView); // Fixed here
+
+                if (isLightingGood()) {
+                    // Then, check pose
+                    Log.d(TAG, "start checking pose -------------------------------------------");
+                    preCheck.detectPoseFromPreview(textureView);
+                } else {
+                    Log.w(TAG, "Lighting is not good, retrying...");
+                    preCheck.startReactiveLightingCheck(textureView); // Retry Lighting Check
+                    return;
+                }
+
+                // Get the latest pose after the lighting check
+                Pose latestPose = preCheck.getLatestPose(); // Ensure you are getting the most recent pose from preCheck
+
+                // Validate pose
+                if (latestPose != null && isPoseValid(latestPose, textureView.getWidth(), textureView.getHeight())) {
+                    askToStartRecording();
+                } else {
+                    Log.w(TAG, "Pose is invalid, retrying...");
+                    preCheck.detectPoseFromPreview(textureView); // Keep checking pose
+                }
+            }, 5000); // Check again after 5 seconds
+
         } catch (Exception e) {
             Log.e(TAG, "Failed to startRecording()", e);
             cleanupResources();
             stopBackgroundThread();
             call.reject("Failed to start recording: " + e.getMessage());
-
-            // Try restoring WebView
-            getActivity().runOnUiThread(() -> {
-                try {
-                    View webView = getBridge().getWebView();
-                    if (webView != null) {
-                        webView.setVisibility(View.VISIBLE);
-                        fadeTo(webView, 1f, 200);
-                        Log.d(TAG, "WebView restored after error in startRecording");
-                    }
-                } catch (Exception ex) {
-                    Log.e(TAG, "Failed to restore WebView after error", ex);
-                }
-            });
         }
+    }
+
+    private boolean isLightingGood() {
+        return true;
     }
 
     private String getPreferredCameraId() throws CameraAccessException {
@@ -372,7 +391,7 @@ public class TpaCameraPlugin extends Plugin {
             throw new IllegalStateException("Cannot access camera configuration");
         }
 
-        // Log full devie capability matrix
+        // Log full capability matrix
         Log.d(TAG, "Supported High-Speed Video Sizes and FPS Ranges:");
         for (Size size : configMap.getHighSpeedVideoSizes()) {
             try {
@@ -519,18 +538,18 @@ public class TpaCameraPlugin extends Plugin {
                     configureTransform(width, height);
                     openCamera();
 
-                    // ONNX: Start ONNX lighting check AFTER texture is available
+                    // Start ONNX lighting check AFTER texture is available
                     getActivity().runOnUiThread(() -> {
                         if (preCheck == null) {
                             preCheck = new onnxPreChecking(getContext());
-                            Log.d(TAG, "[ONNX] Instance created after preview");
+                            Log.d(TAG, "✅ [ONNX] Instance created after preview");
                         }
 
                         if (textureView != null && textureView.isAvailable()) {
                             preCheck.startReactiveLightingCheck(textureView);
-                            Log.d(TAG, "[ONNX] Lighting check started after preview");
+                            Log.d(TAG, "✅ [ONNX] Lighting check started after preview");
                         } else {
-                            Log.w(TAG, "[ONNX] TextureView still not available");
+                            Log.w(TAG, "⚠️ [ONNX] TextureView still not available");
                         }
 
                         // Start processing the pose detection
@@ -556,15 +575,14 @@ public class TpaCameraPlugin extends Plugin {
             //
             public void onSurfaceTextureUpdated(@NonNull SurfaceTexture surface) {
                 // ONNX: This is where you will process the frame for pose detection
-                // processPoseDetection(); // ONNX: Process the current frame
-                // ONNX: Start pose detection loop
+                processPoseDetection();
             }
         });
 
         setupUI(); // Adds textureView and UI buttons
     }
 
-    // ONNX: Process the current frame for pose detection
+    // ONXX: Process the current frame for pose detection
     private void processPoseDetection() {
         if (textureView != null && textureView.isAvailable()) {
             Bitmap bitmap = textureView.getBitmap();
@@ -598,16 +616,11 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
-    // ONNX: Validate pose and provide feedback
     private boolean isTTSInProgress = false; // Flag to track if TTS is in progress
 
-    // ONNX: Validate shoulders alignment and provide feedback...
-    private void validateShouldersAlignment(Pose pose, FeedbackHelper helper) {
-        if (helper == null) {
-            Log.w(TAG, "⚠️ FeedbackHelper is null in validateShouldersAlignment – skipping feedback.");
-            return;
-        }
-
+    // ONNX: Validate shoulders alignment and provide feedback
+    private void validateShouldersAlignment(Pose pose) {
+        // Get all pose landmarks
         List<PoseLandmark> landmarks = pose.getAllPoseLandmarks();
         PoseLandmark leftShoulder = null;
         PoseLandmark rightShoulder = null;
@@ -646,6 +659,14 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
+    /**
+     * Density-independent-pixels → physical pixels
+     */
+    private int dpToPx(Context ctx, int dp) {
+        float density = ctx.getResources().getDisplayMetrics().density;
+        return Math.round(dp * density);
+    }
+
     @SuppressLint("SetTextI18n")
     private void setupUI() {
         Activity activity = getActivity();
@@ -660,26 +681,27 @@ public class TpaCameraPlugin extends Plugin {
                 FrameLayout.LayoutParams.MATCH_PARENT));
         overlay.setBackgroundColor(0xFF000000);
 
-        // Black placeholder to present flash before TextureView is ready
+        // ── Black placeholder ─
         blackPlaceholder = new View(activity);
         blackPlaceholder.setLayoutParams(new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
         blackPlaceholder.setBackgroundColor(0xFF000000);
-        overlay.addView(blackPlaceholder); // Add first
+        overlay.addView(blackPlaceholder);
 
-        // TextureView
-        textureView.setAlpha(0f); // hidden initially
-        textureView.setKeepScreenOn(true); // prevent screen from sleeping
+        // ── TextureView ─
+        textureView.setAlpha(0f);
+        textureView.setKeepScreenOn(true);
         overlay.addView(textureView);
 
-        // ONNX: Grid Overlay added just after textureView
+        // Grid Overlay added just after textureView
         GridOverlay gridOverlay = new GridOverlay(activity);
         gridOverlay.setLayoutParams(new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
         overlay.addView(gridOverlay);
-        // Timer
+
+        // ── Timer label ─
         timerView = new TextView(activity);
         timerView.setText("00:00");
         timerView.setTextSize(12);
@@ -701,7 +723,7 @@ public class TpaCameraPlugin extends Plugin {
         timerView.setLayoutParams(timerParams);
         overlay.addView(timerView);
 
-        // Buttons
+        // ── Buttons ─
         recordButton = createIconButton(R.drawable.start);
         pauseButton = createIconButton(R.drawable.pause);
         stopButton = createIconButton(R.drawable.stop);
@@ -710,6 +732,7 @@ public class TpaCameraPlugin extends Plugin {
         LinearLayout buttonsLayout = new LinearLayout(activity);
         buttonsLayout.setOrientation(LinearLayout.HORIZONTAL);
         buttonsLayout.setGravity(Gravity.CENTER);
+
         FrameLayout.LayoutParams buttonsParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -760,11 +783,6 @@ public class TpaCameraPlugin extends Plugin {
         });
 
         setupButtonListeners();
-    }
-
-    private int dpToPx(Context ctx, int dp) {
-        float density = ctx.getResources().getDisplayMetrics().density;
-        return Math.round(dp * density);
     }
 
     private ImageButton createIconButton(@DrawableRes int drawableId) {
@@ -907,191 +925,136 @@ public class TpaCameraPlugin extends Plugin {
     }
 
     private void startHighSpeedCaptureSession() {
-        synchronized (cameraLock) {
-            try {
-                Log.d(TAG, "startHighSpeedCaptureSession() started");
-
-                if (cameraDevice == null) {
-                    Log.e(TAG, "cameraDevice is null");
-                    return;
-                }
-
-                if (selectedSize == null) {
-                    Log.e(TAG, "selectedSize is null");
-                    return;
-                }
-
-                if (cameraManager == null || selectedCameraId == null) {
-                    Log.e(TAG, "cameraManager or selectedCameraId is null");
-                    return;
-                }
-
-                CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
-                StreamConfigurationMap configMap = characteristics.get(
-                        CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-
-                if (configMap == null) {
-                    Log.e(TAG, "StreamConfigurationMap is null");
-                    tryLowerFpsFallback();
-                    return;
-                }
-
-                // Verify high speed support
-                Range<Integer>[] fpsRanges = characteristics.get(
-                        CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
-
-                boolean highSpeedSupported = false;
-                for (Range<Integer> range : fpsRanges) {
-                    if (range.getUpper() >= 120) {
-                        highSpeedSupported = true;
-                        break;
-                    }
-                }
-
-                if (!highSpeedSupported) {
-                    Log.w(TAG, "High speed not supported, falling back to standard");
-                    tryStandardSessionAgain();
-                    return;
-                }
-
-                SurfaceTexture surfaceTexture = textureView.getSurfaceTexture();
-                if (surfaceTexture == null) {
-                    Log.e(TAG, "SurfaceTexture is null");
-                    return;
-                }
-
-                // Set the size of camera preview (require before using SurfaceTexture)
-                surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
-                previewSurface = new Surface(surfaceTexture);
-
-                List<Surface> surfaces = new ArrayList<>();
-                surfaces.add(previewSurface);
-
-                cameraDevice.createConstrainedHighSpeedCaptureSession(
-                        surfaces,
-                        new CameraCaptureSession.StateCallback() {
-                            @Override
-                            public void onConfigured(@NonNull CameraCaptureSession session) {
-                                synchronized (cameraLock) {
-                                    captureSession = session;
-                                    try {
-                                        CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(
-                                                CameraDevice.TEMPLATE_RECORD);
-                                        builder.addTarget(previewSurface);
-                                        builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                                                new Range<>(videoFrameRate, videoFrameRate));
-                                        builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-
-                                        session.setRepeatingRequest(builder.build(), null, backgroundHandler);
-                                        Log.d(TAG, "High speed preview started");
-
-                                        // Fade in preview
-                                        Activity activity = getActivity();
-                                        if (activity != null) {
-                                            activity.runOnUiThread(() -> {
-                                                if (textureView != null) {
-                                                    textureView.setAlpha(1f);
-                                                }
-                                                if (blackPlaceholder != null && overlay != null) {
-                                                    overlay.removeView(blackPlaceholder);
-                                                }
-                                            });
-                                        } else {
-                                            Log.w(TAG, "getActivity() returned null — skipping UI fade-in");
-                                        }
-
-                                    } catch (CameraAccessException e) {
-                                        Log.e(TAG, "Failed to start high speed preview", e);
-                                        tryLowerFpsFallback();
-                                    }
-                                }
-                            }
-
-                            @Override
-                            public void onConfigureFailed(@NonNull CameraCaptureSession session) {
-                                Log.e(TAG, "High speed configuration failed");
-                                tryLowerFpsFallback();
-                            }
-                        }, backgroundHandler);
-
-            } catch (CameraAccessException e) {
-                Log.e(TAG, "CameraAccessException during session setup", e);
-                tryLowerFpsFallback();
-            } catch (IllegalStateException e) {
-                Log.e(TAG, "IllegalStateException during session setup", e);
-                tryLowerFpsFallback();
-            }
-        }
-    }
-
-    private void startHighSpeedPreviewOnlySession() {
-        Log.d(TAG, "🎬 startHighSpeedPreviewOnlySession() triggered");
         try {
-            if (cameraDevice == null || previewSurface == null) {
-                Log.e(TAG, "Cannot start high-speed session: device or surface is null");
+            if (cameraDevice == null) {
+                rejectIfPossible("cameraDevice is null – aborting high-speed session setup");
                 return;
             }
 
-            List<Surface> surfaces = new ArrayList<>();
-            surfaces.add(previewSurface);
+            CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
+            StreamConfigurationMap configMap = characteristics
+                    .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            if (configMap == null || configMap.getHighSpeedVideoSizes() == null) {
+                Log.w(TAG, "High-speed not supported, falling back to standard");
+                tryStandardSessionAgain();
+                return;
+            }
 
-            cameraDevice.createConstrainedHighSpeedCaptureSession(
-                    surfaces,
-                    new CameraCaptureSession.StateCallback() {
-                        @Override
-                        public void onConfigured(@NonNull CameraCaptureSession session) {
-                            captureSession = session;
-                            try {
-                                CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(
-                                        CameraDevice.TEMPLATE_PREVIEW);
-                                builder.addTarget(previewSurface);
-                                builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                                        new Range<>(videoFrameRate, videoFrameRate));
-                                builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+            SurfaceTexture surfaceTexture = textureView.getSurfaceTexture();
+            if (surfaceTexture == null) {
+                throw new IllegalStateException("Surface texture not available");
+            }
 
-                                session.setRepeatingRequest(builder.build(), null, backgroundHandler);
-                                Log.d(TAG, "High-speed preview started");
+            surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
+            previewSurface = new Surface(surfaceTexture);
 
-                            } catch (CameraAccessException e) {
-                                Log.e(TAG, "Failed to start high-speed preview", e);
-                            }
-                        }
+            safeReleaseMediaRecorder();
+            setupMediaRecorder();
+            Surface recorderSurface = mediaRecorder.getSurface();
 
-                        @Override
-                        public void onConfigureFailed(@NonNull CameraCaptureSession session) {
-                            Log.e(TAG, "High-speed preview config failed");
-                        }
-                    },
-                    backgroundHandler);
-        } catch (CameraAccessException e) {
-            Log.e(TAG, "Failed to start constrained high-speed session", e);
+            List<Surface> surfaces = Arrays.asList(previewSurface, recorderSurface);
+
+            cameraDevice.createConstrainedHighSpeedCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
+                @Override
+                public void onConfigured(@NonNull CameraCaptureSession session) {
+                    try {
+                        CameraConstrainedHighSpeedCaptureSession hsSession = (CameraConstrainedHighSpeedCaptureSession) session;
+
+                        CaptureRequest.Builder builder = cameraDevice
+                                .createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+                        builder.addTarget(previewSurface);
+                        builder.addTarget(recorderSurface);
+                        builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+                        builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                                new Range<>(videoFrameRate, videoFrameRate));
+
+                        hsSession.setRepeatingBurst(
+                                hsSession.createHighSpeedRequestList(builder.build()),
+                                null,
+                                backgroundHandler);
+
+                        captureSession = session;
+
+                        // ✅ Show toast with selected resolution + FPS
+                        getActivity().runOnUiThread(() -> {
+                            recordButton.setVisibility(View.VISIBLE);
+                            Toast.makeText(getContext(),
+                                    "Ready: " + videoFrameRate + "fps @ " +
+                                            selectedSize.getWidth() + "x" + selectedSize.getHeight(),
+                                    Toast.LENGTH_SHORT).show();
+                        });
+
+                        onPreviewSuccess(); // Handles fade-in + UI
+
+                    } catch (Exception e) {
+                        Log.e(TAG, "High-speed burst failed. Trying lower FPS fallback.", e);
+                        tryLowerFpsFallback();
+                    }
+                }
+
+                @Override
+                public void onConfigureFailed(@NonNull CameraCaptureSession session) {
+                    Log.e(TAG, "High-speed session configure failed. Trying lower FPS fallback.");
+                    tryLowerFpsFallback();
+                }
+            }, backgroundHandler);
+
+        } catch (Exception e) {
+            Log.e(TAG, "Exception during high-speed setup. Trying lower FPS fallback.", e);
+            tryLowerFpsFallback();
         }
     }
 
     private void tryLowerFpsFallback() {
-        synchronized (cameraLock) {
+        getActivity().runOnUiThread(() -> {
             try {
+                CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(selectedCameraId);
+                StreamConfigurationMap configMap = characteristics
+                        .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                if (configMap == null) {
+                    rejectIfPossible("❌ Cannot access camera configuration.");
+                    cleanupResources(); // ❗Only clean up if we abort
+                    return;
+                }
+
+                List<Size> highSpeedSizes = Arrays.asList(configMap.getHighSpeedVideoSizes());
+
+                // === Resolution Fallback ===
+                if (selectedSize != null && selectedSize.getWidth() > 720) {
+                    Size fallbackSize = new Size(720, 480);
+                    if (highSpeedSizes.contains(fallbackSize)) {
+                        Log.w(TAG, "Resolution fallback: trying 720x480 @ " + videoFrameRate + "fps");
+                        selectedSize = fallbackSize;
+                        tryHighSpeedAgain();
+                        return;
+                    } else {
+                        Log.w(TAG, "720x480 not supported for high-speed. Skipping resolution fallback.");
+                    }
+                }
+
+                // === FPS Fallback ===
                 if (videoFrameRate >= 240) {
-                    Log.w(TAG, "240fps failed ➡︎ trying 120fps");
+                    Log.w(TAG, "240fps failed → trying 120fps...");
                     videoFrameRate = 120;
-                    startHighSpeedCaptureSession();
+                    tryHighSpeedAgain();
                 } else if (videoFrameRate >= 120) {
-                    Log.w(TAG, "120fps failed ➡︎ trying 60fps");
+                    Log.w(TAG, "120fps failed → trying 60fps...");
                     videoFrameRate = 60;
-                    startStandardCaptureSession();
+                    tryStandardSessionAgain();
                 } else if (videoFrameRate >= 60) {
-                    Log.w(TAG, "60fps failed ➡︎ trying 30fps");
+                    Log.w(TAG, "60fps failed → trying 30fps...");
                     videoFrameRate = 30;
-                    startStandardCaptureSession();
+                    tryStandardSessionAgain();
                 } else {
-                    rejectIfPossible("All failback attempts failed (fps & resolution)");
+                    rejectIfPossible("All fallback attempts failed (fps & resolution)");
                     cleanupResources();
                 }
-            } catch (Exception e) {
-                rejectIfPossible("package " + e.getMessage());
+
+            } catch (CameraAccessException e) {
+                rejectIfPossible("Camera access error during fallback: " + e.getMessage());
                 cleanupResources();
             }
-        }
+        });
     }
 
     private void tryHighSpeedAgain() {
@@ -1108,7 +1071,7 @@ public class TpaCameraPlugin extends Plugin {
             startStandardCaptureSession();
             Log.d(TAG, "Final fallback: standard session @ " + videoFrameRate + "fps");
         } catch (Exception e) {
-            rejectIfPossible("Standard fallback failed: " + e.getMessage());
+            rejectIfPossible("❌ Standard fallback failed: " + e.getMessage());
         }
     }
 
@@ -1133,20 +1096,24 @@ public class TpaCameraPlugin extends Plugin {
     }
 
     private void startStandardCaptureSession() throws Exception {
+        Log.d(TAG, " startStandardCaptureSession() called");
+
         SurfaceTexture surfaceTexture = textureView.getSurfaceTexture();
         if (surfaceTexture == null) {
+            Log.e(TAG, "Surface texture is null");
             throw new IllegalStateException("Surface texture not available");
         }
+
         surfaceTexture.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
         previewSurface = new Surface(surfaceTexture);
+        Log.d(TAG, " Preview surface set: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
 
-        // Reset old MediaRecorder if it exists
         safeReleaseMediaRecorder();
 
-        // Setup MediaRecorder after surfaces are ready
         setupMediaRecorder();
         Surface recorderSurface = mediaRecorder.getSurface();
         if (recorderSurface == null) {
+            Log.e(TAG, " Recorder surface is null after prepare()");
             throw new IllegalStateException("Recorder surface is null after prepare()");
         }
 
@@ -1154,10 +1121,13 @@ public class TpaCameraPlugin extends Plugin {
         surfaces.add(previewSurface);
         surfaces.add(recorderSurface);
 
+        Log.d(TAG, "🎥 Creating standard camera session...");
         cameraDevice.createCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
             @Override
             public void onConfigured(@NonNull CameraCaptureSession session) {
+                Log.d(TAG, "✅ Standard session configured");
                 captureSession = session;
+
                 try {
                     CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
                     builder.addTarget(previewSurface);
@@ -1166,15 +1136,13 @@ public class TpaCameraPlugin extends Plugin {
                     builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                             new Range<>(videoFrameRate, videoFrameRate));
 
+                    Log.d(TAG, "⚡ Repeating standard request: " + videoFrameRate + "fps");
                     session.setRepeatingRequest(builder.build(), null, backgroundHandler);
 
                     textureView.post(() -> {
                         configureTransform(textureView.getWidth(), textureView.getHeight());
+                        fadeTo(textureView, 1f, 300);
 
-                        // Fade in the preview
-                        fadeTo(textureView, 1f, 300); // Fade in
-
-                        // Remove black placeholder from overlay
                         if (blackPlaceholder != null) {
                             blackPlaceholder.animate()
                                     .alpha(0f)
@@ -1192,7 +1160,6 @@ public class TpaCameraPlugin extends Plugin {
                                     .start();
                         }
 
-                        // Remove full-screen black overlay
                         if (blackOverlayView != null) {
                             ViewGroup root = (ViewGroup) getActivity().findViewById(android.R.id.content);
                             root.removeView(blackOverlayView);
@@ -1201,11 +1168,14 @@ public class TpaCameraPlugin extends Plugin {
                     });
 
                     getActivity().runOnUiThread(() -> {
+                        Log.d(TAG, "✅ UI ready — preview should be visible now");
+                        recordButton.setVisibility(View.VISIBLE);
                         Toast.makeText(getContext(), "Ready: " + videoFrameRate + "fps " +
                                 selectedSize.getWidth() + "x" + selectedSize.getHeight(), Toast.LENGTH_SHORT).show();
                     });
 
                 } catch (Exception e) {
+                    Log.e(TAG, "❌ Failed to start preview: " + e.getMessage(), e);
                     rejectIfPossible("Failed to start preview: " + e.getMessage());
                     getActivity().runOnUiThread(() -> cleanupResources());
                 }
@@ -1213,6 +1183,7 @@ public class TpaCameraPlugin extends Plugin {
 
             @Override
             public void onConfigureFailed(@NonNull CameraCaptureSession session) {
+                Log.e(TAG, "❌ Standard configuration failed");
                 rejectIfPossible("Standard configuration failed");
                 getActivity().runOnUiThread(() -> cleanupResources());
             }
@@ -1262,7 +1233,7 @@ public class TpaCameraPlugin extends Plugin {
                 previewSurface = null;
             }
 
-            // ONNX: clean preCheck
+            // clean preCheck
             if (preCheck != null) {
                 preCheck.cleanup();
                 preCheck = null;
@@ -1342,7 +1313,6 @@ public class TpaCameraPlugin extends Plugin {
         // Rotate and fix upside-down
         matrix.postRotate(90 * (rotation - 2), centerX, centerY);
         matrix.postScale(1, -1, centerX, centerY); // Fix vertical flip
-        matrix.postScale(-1, 1, centerX, centerY); // Fix horizontal flip
 
         textureView.setTransform(matrix);
     }
@@ -1517,7 +1487,7 @@ public class TpaCameraPlugin extends Plugin {
         } finally {
             if (preCheck != null) {
                 preCheck.stopReactiveLightingCheck();
-                Log.d(TAG, "Lighting check stopped in stopRecording()");
+                Log.d(TAG, "✅ Lighting check stopped in stopRecording()");
             }
 
             getActivity().runOnUiThread(this::cleanupResources);
@@ -1603,6 +1573,44 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
+    private void rejectIfPossible(String errorMessage) {
+        if (storedCall == null) {
+            Log.w(TAG, "storedCall is null. Could not reject: " + errorMessage);
+            return;
+        }
+
+        JSObject result = new JSObject();
+        result.put("videoPath", "");
+        result.put("error", errorMessage);
+        result.put("frameRate", videoFrameRate);
+        result.put("resolution", selectedSize != null ? selectedSize.getWidth() + "x" + selectedSize.getHeight() : "");
+        result.put("duration", 0);
+        result.put("sizeLimit", sizeLimit);
+        result.put("fileSizeMB", 0);
+
+        Log.d(TAG, "Result JSON: " + result.toString());
+
+        storedCall.resolve(result);
+        storedCall = null;
+    }
+
+    private String getCameraErrorMessage(int errorCode) {
+        switch (errorCode) {
+            case CameraDevice.StateCallback.ERROR_CAMERA_IN_USE:
+                return "ERROR_CAMERA_IN_USE (1): Camera is already in use by another app.";
+            case CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE:
+                return "ERROR_MAX_CAMERAS_IN_USE (2): Too many cameras are in use simultaneously.";
+            case CameraDevice.StateCallback.ERROR_CAMERA_DISABLED:
+                return "ERROR_CAMERA_DISABLED (3): Camera is disabled due to device policy.";
+            case CameraDevice.StateCallback.ERROR_CAMERA_DEVICE:
+                return "ERROR_CAMERA_DEVICE (4): Fatal error. Camera must be closed and reopened.";
+            case CameraDevice.StateCallback.ERROR_CAMERA_SERVICE:
+                return "ERROR_CAMERA_SERVICE (5): Camera service has crashed. Restart required.";
+            default:
+                return "UNKNOWN CAMERA ERROR (" + errorCode + ")";
+        }
+    }
+
     private void safeReleaseMediaRecorder() {
         if (mediaRecorder != null) {
             try {
@@ -1646,45 +1654,9 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
-    private void rejectIfPossible(String errorMessage) {
-        if (storedCall == null) {
-            Log.w(TAG, "storedCall is null. Could not reject: " + errorMessage);
-            return;
-        } else
-            Log.w(TAG, "storedCall is not null, Returning message -=> " + errorMessage);
+    // ========================================
 
-        JSObject result = new JSObject();
-        result.put("videoPath", "");
-        result.put("error", errorMessage);
-        result.put("frameRate", videoFrameRate);
-        result.put("resolution", selectedSize != null ? selectedSize.getWidth() + "x" + selectedSize.getHeight() : "");
-        result.put("duration", 0);
-        result.put("sizeLimit", sizeLimit);
-        result.put("fileSizeMB", 0);
-
-        Log.d(TAG, "Result JSON:\n" + result.toString());
-        storedCall.resolve(result);
-        storedCall = null;
-    }
-
-    private String getCameraErrorMessage(int errorCode) {
-        switch (errorCode) {
-            case CameraDevice.StateCallback.ERROR_CAMERA_IN_USE:
-                return "ERROR_CAMERA_IN_USE (1): Camera is already in use by another app.";
-            case CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE:
-                return "ERROR_MAX_CAMERAS_IN_USE (2): Too many cameras are in use simultaneously.";
-            case CameraDevice.StateCallback.ERROR_CAMERA_DISABLED:
-                return "ERROR_CAMERA_DISABLED (3): Camera is disabled due to device policy.";
-            case CameraDevice.StateCallback.ERROR_CAMERA_DEVICE:
-                return "ERROR_CAMERA_DEVICE (4): Fatal error. Camera must be closed and reopened.";
-            case CameraDevice.StateCallback.ERROR_CAMERA_SERVICE:
-                return "ERROR_CAMERA_SERVICE (5): Camera service has crashed. Restart required.";
-            default:
-                return "UNKNOWN CAMERA ERROR (" + errorCode + ")";
-        }
-    }
-
-    // ONNX: Validate pose and give feedback
+    // Validate the pose and give feedback
     private void validatePoseAndFeedback(Pose pose, int previewWidth, int previewHeight) {
         if (isPoseValid(pose, previewWidth, previewHeight)) {
             askToStartRecording();
@@ -1709,7 +1681,7 @@ public class TpaCameraPlugin extends Plugin {
         }
     }
 
-    // ONNX: Ask the user if they're ready to start recording
+    // Ask the user if they're ready to start recording
     private void askToStartRecording() {
         feedbackHelper.speakWithBeeps("You're good to go, can I start recording now?", 1, 3000, () -> {
             // Wait for response, if "Yes", start recording
@@ -1719,7 +1691,7 @@ public class TpaCameraPlugin extends Plugin {
         });
     }
 
-    // ONNX: Updated isPoseValid to check alignment and distance
+    // Updated isPoseValid to check alignment and distance
     private boolean isPoseValid(Pose pose, int previewWidth, int previewHeight) {
         if (pose == null || pose.getAllPoseLandmarks().isEmpty()) {
             Log.w(TAG, "Pose is invalid: no landmarks detected.");
