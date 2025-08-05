@@ -54,6 +54,8 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import android.graphics.Rect;
+import android.os.Looper;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 // ONNX
 import android.graphics.Bitmap;
@@ -102,53 +104,127 @@ public class TpaCameraPlugin extends Plugin {
 
     // ONNX:
     private onnxPreChecking preCheck;
-    private FeedbackHelper feedbackHelper;
     private PoseDetector poseDetector;
 
     // ONNX: Pose detection handler with 1-second interval
     private final Handler poseHandler = new Handler();
     private int poseDetectionInterval = 1000; // Start with 1 second
+
+    private FeedbackHelper feedbackHelper;
+    private final AtomicBoolean isTtsInitializing = new AtomicBoolean(false);
+    private static final int TTS_INIT_DELAY_MS = 500;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    /**
+     * Safely initializes the FeedbackHelper with TTS capabilities
+     * Ensures only one initialization happens at a time
+     */
+    private void initializeFeedbackHelper() {
+        // Already initialized or in progress
+        if (feedbackHelper != null || isTtsInitializing.get()) {
+            return;
+        }
+
+        // Set initialization flag
+        isTtsInitializing.set(true);
+
+        getActivity().runOnUiThread(() -> {
+            try {
+                Log.d(TAG, "Initializing FeedbackHelper...");
+                initializeFeedbackHelper();
+
+                // Set up delayed check for TTS readiness
+                mainHandler.postDelayed(() -> {
+                    isTtsInitializing.set(false);
+                    if (feedbackHelper != null) {
+                        Log.d(TAG, "FeedbackHelper initialization complete");
+                    } else {
+                        Log.e(TAG, "FeedbackHelper initialization failed");
+                    }
+                }, TTS_INIT_DELAY_MS);
+
+            } catch (Exception e) {
+                isTtsInitializing.set(false);
+                Log.e(TAG, "Failed to initialize FeedbackHelper", e);
+            }
+        });
+    }
+
+    /**
+     * Safe wrapper for speaking with beeps that handles null checks
+     */
+    private void safeSpeakWithBeeps(String message, int beeps, long delay, Runnable action) {
+        if (feedbackHelper == null) {
+            Log.w(TAG, "Cannot speak - FeedbackHelper not initialized");
+            // Optionally queue the message or retry initialization
+            return;
+        }
+
+        getActivity().runOnUiThread(() -> {
+            try {
+                feedbackHelper.speakWithBeeps(message, beeps, delay, action);
+            } catch (Exception e) {
+                Log.e(TAG, "Error in safeSpeakWithBeeps", e);
+            }
+        });
+    }
+
+    /**
+     * Clean up FeedbackHelper resources
+     */
+    private void cleanupFeedbackHelper() {
+        if (feedbackHelper != null) {
+            try {
+                feedbackHelper.shutdown();
+            } catch (Exception e) {
+                Log.e(TAG, "Error shutting down FeedbackHelper", e);
+            }
+            feedbackHelper = null;
+        }
+        isTtsInitializing.set(false);
+    }
+
     private final Runnable poseRunnable = new Runnable() {
-        @Override 
-        public void run() { 
+        @Override
+        public void run() {
             if (textureView != null && textureView.isAvailable()) {
-            // Convert the current frame into a Bitmap
-            Bitmap bitmap = textureView.getBitmap();
+                // Convert the current frame into a Bitmap
+                Bitmap bitmap = textureView.getBitmap();
 
-            if (bitmap != null) {
-            // Convert Bitmap to InputImage
-            InputImage image = InputImage.fromBitmap(bitmap, 0); // The second argument is the rotation (if any)
+                if (bitmap != null) {
+                    // Convert Bitmap to InputImage
+                    InputImage image = InputImage.fromBitmap(bitmap, 0); // The second argument is the rotation (if any)
 
-    // Process the frame with pose detection
-    poseDetector.process(image)
-    .addOnSuccessListener(pose -> {
-        if (pose != null) {
-    // Validate the pose
-    validatePoseAndFeedback(pose, textureView.getWidth(), textureView.getHeight());
-}
-})
-.addOnFailureListener(e -> {
-    Log.e(TAG, "Pose detection failed", e);
-    poseDetectionInterval = 2000; // Increase interval after failure
-    poseHandler.postDelayed(this, poseDetectionInterval); // Retry after a longer interval
-    });
-} else { 
-    Log.w(TAG, "Failed to get bitmap from TextureView");
-}
-}
+                    // Process the frame with pose detection
+                    poseDetector.process(image)
+                            .addOnSuccessListener(pose -> {
+                                if (pose != null) {
+                                    // Validate the pose
+                                    validatePoseAndFeedback(pose, textureView.getWidth(), textureView.getHeight());
+                                }
+                            })
+                            .addOnFailureListener(e -> {
+                                Log.e(TAG, "Pose detection failed", e);
+                                poseDetectionInterval = 2000; // Increase interval after failure
+                                poseHandler.postDelayed(this, poseDetectionInterval); // Retry after a longer interval
+                            });
+                } else {
+                    Log.w(TAG, "Failed to get bitmap from TextureView");
+                }
+            }
 
-    // Re-run after dynamic interval (default 1 second or adjusted based on
-    // conditions)
-    poseHandler.postDelayed(this, poseDetectionInterval);
-}
-};
+            // Re-run after dynamic interval (default 1 second or adjusted based on
+            // conditions)
+            poseHandler.postDelayed(this, poseDetectionInterval);
+        }
+    };
 
     // ONNX: Start pose detection with dynamic interval
     public void startPoseDetection() {
         poseHandler.post(poseRunnable); // Ensure this is inside a method that is executed
     }
 
-       // timerHandler
+    // timerHandler
     private final Handler timerHandler = new Handler();
     private final Runnable timerRunnable = new Runnable() {
         @Override
@@ -176,14 +252,15 @@ public class TpaCameraPlugin extends Plugin {
 
         Log.d(TAG, "startRecording -> Permission granted...");
 
-        // ONNX: Only lighting check
-        // -------------------------------------------------
-        if (preCheck == null)
+        // ✅ ONNX: Only lighting check
+        if (preCheck == null) {
             preCheck = new onnxPreChecking(getContext());
+        }
 
-        feedbackHelper = new FeedbackHelper(getContext());
+        // ✅ Safe FeedbackHelper initialization (no crash on null)
+        initializeFeedbackHelper();
 
-        // ONNX: Initialize pose detector (only once)
+        // ✅ ONNX: Initialize pose detector (only once)
         if (poseDetector == null) {
             poseDetector = PoseDetection.getClient(new PoseDetectorOptions.Builder()
                     .setDetectorMode(PoseDetectorOptions.STREAM_MODE)
@@ -229,7 +306,10 @@ public class TpaCameraPlugin extends Plugin {
                 try {
                     showCameraPreview();
 
-                    // Hide WebView for native fullscreen
+                    // ✅ Start ONNX pose check loop after preview is ready
+                    runPoseValidationLoop();
+
+                    // ✅ Hide WebView for full screen native mode
                     View webView = getBridge().getWebView();
                     if (webView != null) {
                         webView.setVisibility(View.GONE);
@@ -430,6 +510,8 @@ public class TpaCameraPlugin extends Plugin {
 
         textureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override
+            // ONNX: SurfaceTexture available callback
+            // ONNX: Start the pose detection loop
             public void onSurfaceTextureAvailable(@NonNull SurfaceTexture surface, int width, int height) {
                 if (selectedSize != null) {
                     surface.setDefaultBufferSize(selectedSize.getWidth(), selectedSize.getHeight());
@@ -452,7 +534,7 @@ public class TpaCameraPlugin extends Plugin {
                         }
 
                         // Start processing the pose detection
-                        processPoseDetection();
+                        // processPoseDetection();
                     });
 
                 } else {
@@ -471,20 +553,20 @@ public class TpaCameraPlugin extends Plugin {
             }
 
             @Override
+            //
             public void onSurfaceTextureUpdated(@NonNull SurfaceTexture surface) {
                 // ONNX: This is where you will process the frame for pose detection
-                processPoseDetection();
+                // processPoseDetection(); // ONNX: Process the current frame
+                // ONNX: Start pose detection loop
             }
         });
 
         setupUI(); // Adds textureView and UI buttons
     }
 
-    // ONXX: Process the current frame for pose detection
+    // ONNX: Process the current frame for pose detection
     private void processPoseDetection() {
-        // Check if the TextureView is available
         if (textureView != null && textureView.isAvailable()) {
-            // Convert the current frame into a Bitmap
             Bitmap bitmap = textureView.getBitmap();
 
             if (bitmap == null) {
@@ -492,17 +574,20 @@ public class TpaCameraPlugin extends Plugin {
                 return;
             }
 
-            // Convert Bitmap to InputImage
             InputImage image = InputImage.fromBitmap(bitmap, 0);
 
-            // Process the frame with pose detection
+            // ✅ Capture helper early to avoid null in async callback
+            final FeedbackHelper helper = this.feedbackHelper;
+
             poseDetector.process(image)
                     .addOnSuccessListener(pose -> {
                         if (pose != null) {
-                            // Log.d(TAG, "Pose detected: " + pose); // Log pose detection
-
-                            // Validate pose using specific landmarks
-                            validateShouldersAlignment(pose);
+                            if (helper == null) {
+                                Log.w(TAG, "⚠️ Captured helper is null – skipping validation.");
+                                return;
+                            }
+                            // ✅ Pass the helper to avoid using the field directly
+                            // validateShouldersAlignment(pose, helper);
                         }
                     })
                     .addOnFailureListener(e -> {
@@ -516,16 +601,17 @@ public class TpaCameraPlugin extends Plugin {
     // ONNX: Validate pose and provide feedback
     private boolean isTTSInProgress = false; // Flag to track if TTS is in progress
 
-    // ONNX: Validate shoulders alignment and provide feedback
-    private void validateShouldersAlignment(Pose pose) {
-        // Get all pose landmarks
-        List<PoseLandmark> landmarks = pose.getAllPoseLandmarks();
+    // ONNX: Validate shoulders alignment and provide feedback...
+    private void validateShouldersAlignment(Pose pose, FeedbackHelper helper) {
+        if (helper == null) {
+            Log.w(TAG, "⚠️ FeedbackHelper is null in validateShouldersAlignment – skipping feedback.");
+            return;
+        }
 
-        // Initialize variables for left and right shoulders
+        List<PoseLandmark> landmarks = pose.getAllPoseLandmarks();
         PoseLandmark leftShoulder = null;
         PoseLandmark rightShoulder = null;
 
-        // Find the landmarks for left and right shoulders
         for (PoseLandmark landmark : landmarks) {
             if (landmark.getLandmarkType() == PoseLandmark.LEFT_SHOULDER) {
                 leftShoulder = landmark;
@@ -534,33 +620,28 @@ public class TpaCameraPlugin extends Plugin {
             }
         }
 
-        // If both shoulders are detected, check their alignment
         if (leftShoulder != null && rightShoulder != null) {
             float leftShoulderX = leftShoulder.getPosition().x;
             float rightShoulderX = rightShoulder.getPosition().x;
 
-            // Check if shoulders are aligned (distance between them is less than a
-            // threshold)
             if (Math.abs(leftShoulderX - rightShoulderX) < 50) {
-                // Check if TTS is in progress
                 if (!isTTSInProgress) {
-                    isTTSInProgress = true; // Set the flag to true
-                    feedbackHelper.speakWithBeeps("Pose looks good, you're aligned!", 2, 1500,
-                            () -> isTTSInProgress = false); // TTS feedback if aligned
+                    isTTSInProgress = true;
+                    helper.speakWithBeeps("Pose looks good, you're aligned!", 2, 1500,
+                            () -> isTTSInProgress = false);
                 }
             } else {
-                // Check if TTS is in progress
                 if (!isTTSInProgress) {
-                    isTTSInProgress = true; // Set the flag to true
-                    feedbackHelper.speakWithBeeps("Please align your shoulders!", 2, 1500,
-                            () -> isTTSInProgress = false); // TTS feedback if not aligned
+                    isTTSInProgress = true;
+                    helper.speakWithBeeps("Please align your shoulders!", 2, 1500,
+                            () -> isTTSInProgress = false);
                 }
             }
         } else {
-            // If shoulders not detected, provide feedback once
             if (!isTTSInProgress) {
-                isTTSInProgress = true; // Set the flag to true
-                feedbackHelper.speakWithBeeps("Failed to detect shoulders.", 2, 1500, () -> isTTSInProgress = false);
+                isTTSInProgress = true;
+                helper.speakWithBeeps("Failed to detect shoulders.", 2, 1500,
+                        () -> isTTSInProgress = false);
             }
         }
     }
@@ -1147,6 +1228,10 @@ public class TpaCameraPlugin extends Plugin {
     private void cleanupResources() {
         timerHandler.removeCallbacks(timerRunnable);
         Log.d(TAG, "cleanupResources() called");
+
+        // ONNX cleanup feedback helper
+        cleanupFeedbackHelper();
+
         try {
             if (captureSession != null) {
                 try {
@@ -1606,7 +1691,21 @@ public class TpaCameraPlugin extends Plugin {
         } else {
             Log.w(TAG, "Pose is invalid, retrying...");
             // Retry the pose detection after a short delay, if needed
-            preCheck.detectPoseFromPreview(textureView); // Keep checking pose if needed, avoid infinite recursion
+
+            if (textureView == null || !textureView.isAvailable()) {
+                Log.w(TAG, "❌ TextureView not available, skipping pose recheck.");
+                return;
+            }
+
+            // Run pose detection on the UI thread after a delay to prevent tight loops
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                try {
+                    preCheck.detectPoseFromPreview(textureView);
+                } catch (Exception e) {
+                    Log.e(TAG, "⚠️ Failed to run pose detection: " + e.getMessage());
+                }
+            }, 1000); // Delay avoids recursion flood
+
         }
     }
 
@@ -1670,6 +1769,59 @@ public class TpaCameraPlugin extends Plugin {
 
         // If pose is valid
         return true;
+    }
+
+    // ONNX: Run lighting and pose checks in a safe loop
+    private void runPoseValidationLoop() {
+        if (textureView == null || !textureView.isAvailable()) {
+            Log.w(TAG, "❌ TextureView not available. Skipping ONNX loop.");
+            return;
+        }
+
+        // ✅ Fix: Make sure preCheck is initialized
+        if (preCheck == null) {
+            preCheck = new onnxPreChecking(getContext());
+            Log.d(TAG, "[ONNX] Initialized preCheck inside runPoseValidationLoop()");
+        }
+
+        Log.d(TAG, "🔁 Starting ONNX pose validation loop...");
+
+        preCheck.sayLightIsGood(() -> {
+            Log.d(TAG, "✅ Lighting feedback done, now running pose detection...");
+
+            new Handler(Looper.getMainLooper()).post(() -> {
+                try {
+                    Log.d(TAG, "📸 Calling detectPoseFromPreview...");
+                    preCheck.detectPoseFromPreview(textureView);
+                } catch (Exception e) {
+                    Log.e(TAG, "💥 Exception in detectPoseFromPreview: " + e.getMessage(), e);
+                    return;
+                }
+
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    Log.d(TAG, "⏳ Attempting to get latest pose...");
+                    Pose pose = null;
+                    try {
+                        pose = preCheck.getLatestPose();
+                        Log.d(TAG, "📥 Pose retrieved: " + (pose != null ? "✅ Not null" : "❌ Null"));
+                    } catch (Exception e) {
+                        Log.e(TAG, "💥 Exception in getLatestPose(): " + e.getMessage(), e);
+                    }
+
+                    if (pose != null && isPoseValid(pose, textureView.getWidth(), textureView.getHeight())) {
+                        Log.d(TAG, "✅ Pose is valid, asking to start recording...");
+                        askToStartRecording();
+                    } else {
+                        Log.w(TAG, "❌ Pose invalid or null, retrying...");
+                        preCheck.speakPoseNotValid(() -> {
+                            Log.d(TAG, "🔁 Retrying pose validation...");
+                            runPoseValidationLoop();
+                        });
+                    }
+
+                }, 1200);
+            });
+        });
     }
 
 }
