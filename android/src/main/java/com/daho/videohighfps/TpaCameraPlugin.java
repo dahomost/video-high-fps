@@ -53,7 +53,7 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-import android.graphics.rect;
+import android.graphics.Rect;
 
 @CapacitorPlugin(name = "TpaCamera", permissions = {
         @Permission(strings = {
@@ -412,6 +412,10 @@ public class TpaCameraPlugin extends Plugin {
         textureView.setKeepScreenOn(true); // prevent screen from sleeping
         overlay.addView(textureView);
 
+        // ONNX add grid overlay
+        PlayerZoneOverlay playerZoneOverlay = new PlayerZoneOverlay(activity);
+        overlay.addView(playerZoneOverlay);
+
         // Timer
         timerView = new TextView(activity);
         timerView.setText("00:00");
@@ -728,6 +732,10 @@ public class TpaCameraPlugin extends Plugin {
                                                 if (blackPlaceholder != null && overlay != null) {
                                                     overlay.removeView(blackPlaceholder);
                                                 }
+
+                                                // ✅ Safe to start ONNX check loop now
+                                                PlayerPresenceChecker.startMonitoring(textureView, getContext(),
+                                                        backgroundHandler);
                                             });
                                         } else {
                                             Log.w(TAG, "getActivity() returned null — skipping UI fade-in");
@@ -931,6 +939,9 @@ public class TpaCameraPlugin extends Plugin {
                             root.removeView(blackOverlayView);
                             blackOverlayView = null;
                         }
+                        // Start ONNX check loop
+                        PlayerPresenceChecker.startMonitoring(textureView, getContext(), backgroundHandler);
+
                     });
 
                     getActivity().runOnUiThread(() -> {
@@ -1368,7 +1379,7 @@ public class TpaCameraPlugin extends Plugin {
             Log.w(TAG, "storedCall is null. Could not reject: " + errorMessage);
             return;
         } else
-            Log.w(TAG, "storedCall is not null, Returning message -=> ", errorMessage);
+            Log.w(TAG, "storedCall is not null, Returning message -=> " + errorMessage);
 
         JSObject result = new JSObject();
         result.put("videoPath", "");
