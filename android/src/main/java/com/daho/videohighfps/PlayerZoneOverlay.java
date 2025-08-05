@@ -31,7 +31,7 @@ public class PlayerZoneOverlay extends View {
 
         // Rectangle: gray
         rectanglePaint.setColor(Color.WHITE);
-        rectanglePaint.setStrokeWidth(1f);
+        rectanglePaint.setStrokeWidth(3f);
         rectanglePaint.setStyle(Paint.Style.STROKE);
     }
 
