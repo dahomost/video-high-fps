@@ -4,20 +4,23 @@ import android.os.Bundle;
 import android.util.Log;
 import android.view.Gravity;
 import android.widget.FrameLayout;
-
 import com.getcapacitor.BridgeActivity;
 import com.google.mlkit.vision.pose.Pose;
 
 public class MainActivity extends BridgeActivity {
+    private static final String TAG = "ONNX main activity";
 
-    private static final String TAG = "TPA MAIN";
+    private static MainActivity instance;
+    private static GridOverlay zoneOverlay;
 
-    private PlayerZoneOverlay zoneOverlay;
-    private static PoseOverlayView poseOverlayView;
+    public static MainActivity getInstance() {
+        return instance;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        instance = this; // ✅ Save static reference
 
         getWindow().getDecorView().postDelayed(() -> {
             FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
@@ -25,35 +28,31 @@ public class MainActivity extends BridgeActivity {
                     FrameLayout.LayoutParams.MATCH_PARENT);
             params.gravity = Gravity.CENTER;
 
-            // 🟥 Overlay for red detection zone
-            zoneOverlay = new PlayerZoneOverlay(this);
+            zoneOverlay = new GridOverlay(this);
             addContentView(zoneOverlay, params);
-
-            // 🔵 Overlay for pose drawing
-            poseOverlayView = new PoseOverlayView(this);
-            addContentView(poseOverlayView, params);
-
         }, 2000);
     }
 
-    // ✅ Call this from plugin or checker to update drawing
-    public static void updatePoseOverlay(Pose pose, int width, int height) {
-        if (poseOverlayView != null) {
-            poseOverlayView.setPose(pose, width, height);
+    // ✅ Safely called from OnnxPreChecking
+    public void updatePoseOverlay(Pose pose, int imageWidth, int imageHeight) {
+        if (zoneOverlay != null) {
+            zoneOverlay.setPose(pose, imageWidth, imageHeight);
+        } else {
+            Log.w(TAG, "⚠️ zoneOverlay is null");
         }
     }
 
     @Override
     public void onPause() {
         super.onPause();
-        Log.i(TAG, "🛑 onPause - stopping monitoring");
-        PlayerPresenceChecker.stopMonitoring();
+        Log.i(TAG, "✅ onPause - stopping monitoring");
+        OnnxPreChecking.stopMonitoring();
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
-        Log.i(TAG, "🛑 onDestroy - stopping monitoring");
-        PlayerPresenceChecker.stopMonitoring();
+        Log.i(TAG, "✅ onDestroy - stopping monitoring");
+        OnnxPreChecking.stopMonitoring();
     }
 }

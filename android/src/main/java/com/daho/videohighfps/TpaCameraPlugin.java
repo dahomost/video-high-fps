@@ -64,7 +64,7 @@ import android.graphics.Rect;
 
 public class TpaCameraPlugin extends Plugin {
 
-    private static final String TAG = "TpaCamera --=>";
+    private static final String TAG = "✅ Camera plugin -=>";
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
     private MediaRecorder mediaRecorder;
@@ -413,8 +413,9 @@ public class TpaCameraPlugin extends Plugin {
         overlay.addView(textureView);
 
         // ONNX add grid overlay
-        PlayerZoneOverlay playerZoneOverlay = new PlayerZoneOverlay(activity);
-        overlay.addView(playerZoneOverlay);
+        GridOverlay GridOverlay = new GridOverlay(activity);
+        overlay.addView(GridOverlay);
+        textureView.post(() -> GridOverlay.setTextureView(textureView));
 
         // Timer
         timerView = new TextView(activity);
@@ -733,8 +734,8 @@ public class TpaCameraPlugin extends Plugin {
                                                     overlay.removeView(blackPlaceholder);
                                                 }
 
-                                                // ✅ Safe to start ONNX check loop now
-                                                PlayerPresenceChecker.startMonitoring(textureView, getContext(),
+                                                // ✅ start ONNX check loop
+                                                OnnxPreChecking.startMonitoring(textureView, getContext(),
                                                         backgroundHandler);
                                             });
                                         } else {
@@ -940,7 +941,7 @@ public class TpaCameraPlugin extends Plugin {
                             blackOverlayView = null;
                         }
                         // Start ONNX check loop
-                        PlayerPresenceChecker.startMonitoring(textureView, getContext(), backgroundHandler);
+                        OnnxPreChecking.startMonitoring(textureView, getContext(), backgroundHandler);
 
                     });
 
