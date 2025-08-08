@@ -53,7 +53,7 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-import android.graphics.Rect;
+import android.graphics.rect;
 
 @CapacitorPlugin(name = "TpaCamera", permissions = {
         @Permission(strings = {
@@ -85,7 +85,6 @@ public class TpaCameraPlugin extends Plugin {
     private String selectedCameraId;
     private int videoFrameRate;
     private long sizeLimit;
-    private String cameraFacing = "back";
 
     private View blackPlaceholder;
     private final Object cameraLock = new Object();
@@ -127,14 +126,10 @@ public class TpaCameraPlugin extends Plugin {
         Long sizeOpt = call.getLong("sizeLimit");
         this.sizeLimit = (sizeOpt != null) ? sizeOpt : 0L;
 
-        this.cameraFacing = call.getString("cameraFacing", "back");
-
         Log.d(TAG, "start Recording Params:");
         Log.d(TAG, " --> fps: " + videoFrameRate);
         Log.d(TAG, " --> sizeLimit: " + sizeLimit);
         Log.d(TAG, " --> resolution: " + resolution);
-        Log.d(TAG, " --> cameraFacing: " + cameraFacing);
-
         Log.d(TAG, " ==> Device Info:");
         Log.d(TAG, "   - Manufacturer: " + Build.MANUFACTURER);
         Log.d(TAG, "   - Model       : " + Build.MODEL);
@@ -199,19 +194,21 @@ public class TpaCameraPlugin extends Plugin {
             throw new CameraAccessException(CameraAccessException.CAMERA_ERROR, "No cameras available");
         }
 
-        int desiredFacing = "front".equalsIgnoreCase(cameraFacing)
-                ? CameraCharacteristics.LENS_FACING_FRONT
-                : CameraCharacteristics.LENS_FACING_BACK;
+        // Log available cameras for debugging
+        Log.d(TAG, "Available cameras...: " + Arrays.toString(cameraIds));
 
+        // Prefer back camera
         for (String cameraId : cameraIds) {
             CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
             Integer lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING);
-            if (lensFacing != null && lensFacing == desiredFacing) {
+            if (lensFacing != null && lensFacing == CameraCharacteristics.LENS_FACING_BACK) {
                 return cameraId;
             }
         }
 
-        return cameraIds[0]; // fallback
+        // Fallback to first available camera
+        Log.w(TAG, "No back camera found, using camera ID: " + cameraIds[0]);
+        return cameraIds[0];
     }
 
     private void selectOptimalConfiguration(String resolution, int requestedFps) throws CameraAccessException {
@@ -435,7 +432,7 @@ public class TpaCameraPlugin extends Plugin {
                 Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         timerParams.setMargins(0, dpToPx(activity, 80), 0, 0);
         timerView.setLayoutParams(timerParams);
-        // overlay.addView(timerView);
+        overlay.addView(timerView);
 
         // Buttons
         recordButton = createIconButton(R.drawable.start);
@@ -936,11 +933,10 @@ public class TpaCameraPlugin extends Plugin {
                         }
                     });
 
-                    // getActivity().runOnUiThread(() -> {
-                    // Toast.makeText(getContext(), "Ready: " + videoFrameRate + "fps " +
-                    // selectedSize.getWidth() + "x" + selectedSize.getHeight(),
-                    // Toast.LENGTH_SHORT).show();
-                    // });
+                    getActivity().runOnUiThread(() -> {
+                        Toast.makeText(getContext(), "Ready: " + videoFrameRate + "fps " +
+                                selectedSize.getWidth() + "x" + selectedSize.getHeight(), Toast.LENGTH_SHORT).show();
+                    });
 
                 } catch (Exception e) {
                     rejectIfPossible("Failed to start preview: " + e.getMessage());
@@ -1372,7 +1368,7 @@ public class TpaCameraPlugin extends Plugin {
             Log.w(TAG, "storedCall is null. Could not reject: " + errorMessage);
             return;
         } else
-            Log.w(TAG, "storedCall is not null, Returning message -=> " + errorMessage);
+            Log.w(TAG, "storedCall is not null, Returning message -=> ", errorMessage);
 
         JSObject result = new JSObject();
         result.put("videoPath", "");
